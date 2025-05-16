@@ -643,159 +643,165 @@ def main():
                 else:
                     print(block_text)
                 print()
+    system_msg = None  # Holds system message to send to AI (function results, etc.)
+
     try:
         while True:
-            user_input = input(f"{Fore.CYAN}You:{Style.RESET_ALL} ").strip()
-            if not user_input:
-                continue
-            if user_input.lower() in ("/exit", "/quit"):
-                print("Summarizing conversation before exit...")
-                maybe_summarize_history(chat, chat.history)
-                print("Goodbye!")
-                break
-            elif user_input.lower() in ("/plugins", "/functions"):
-                print("Functions available (from function_calls.txt):")
-                try:
-                    with open("function_calls.txt", "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line and not line.startswith("//"):
-                                print(f" - {line}")
-                except Exception as e:
-                    print(f"Could not read function_calls.txt: {e}")
-                continue
-            if user_input.lower() == "/relaunch":
-                print("Refreshing AI state with current conversation history...")
-                try:
-                    current_history = list(chat.history)
+            # 1. Get user input if no pending system message
+            if not system_msg:
+                user_input = input(f"{Fore.CYAN}You:{Style.RESET_ALL} ").strip()
+                if not user_input:
+                    continue
+
+                # Handle commands (exit, help, addkey, etc.)
+                if user_input.lower() in ("/exit", "/quit"):
+                    print("Summarizing conversation before exit...")
+                    maybe_summarize_history(chat, chat.history)
+                    print("Goodbye!")
+                    break
+                elif user_input.lower() in ("/plugins", "/functions"):
+                    print("Functions available (from function_calls.txt):")
+                    try:
+                        with open("function_calls.txt", "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith("//"):
+                                    print(f" - {line}")
+                    except Exception as e:
+                        print(f"Could not read function_calls.txt: {e}")
+                    continue
+                if user_input.lower() == "/relaunch":
+                    print("Refreshing AI state with current conversation history...")
+                    try:
+                        current_history = list(chat.history)
+                        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                            is_system_prompt_first = (
+                                current_history and
+                                current_history[0].role == "user" and
+                                hasattr(current_history[0].parts[0], 'text') and
+                                current_history[0].parts[0].text == system_prompt
+                            )
+                            start_index = 1 if is_system_prompt_first else 0
+                            for entry in current_history[start_index:]:
+                                role = entry.role
+                                message = "".join(part.text for part in entry.parts if hasattr(part, 'text'))
+                                if role == "user":
+                                    f.write(f"User: {message}\n")
+                                elif role == "model":
+                                    if not message.startswith("[FUNCTION RESULT"):
+                                        f.write(f"Gemini: {message}\n")
+                        chat = model.start_chat(history=current_history)
+                        print("AI state refreshed.")
+                        continue
+                    except Exception as e:
+                        print(f"[ERROR] Failed to refresh AI state: {e}")
+                        continue
+
+                if user_input.lower().startswith("reload functions"):
+                    load_functions()
+                    print("functions reloaded.")
+                    continue
+
+                if user_input.lower() == "/clear":
                     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                        is_system_prompt_first = (
-                            current_history and
-                            current_history[0].role == "user" and
-                            hasattr(current_history[0].parts[0], 'text') and
-                            current_history[0].parts[0].text == system_prompt
-                        )
-                        start_index = 1 if is_system_prompt_first else 0
-                        for entry in current_history[start_index:]:
-                            role = entry.role
-                            message = "".join(part.text for part in entry.parts if hasattr(part, 'text'))
-                            if role == "user":
-                                f.write(f"User: {message}\n")
-                            elif role == "model":
-                                if not message.startswith("[FUNCTION RESULT"):
-                                    f.write(f"Gemini: {message}\n")
-                    chat = model.start_chat(history=current_history)
-                    print("AI state refreshed.")
-                    continue
-                except Exception as e:
-                    print(f"[ERROR] Failed to refresh AI state: {e}")
-                    continue
-
-            if user_input.lower().startswith("reload functions"):
-                load_functions()
-                print("functions reloaded.")
-                continue
-
-            if user_input.lower() == "/clear":
-                with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                    pass
-                with open(FULL_HISTORY_FILE, "w", encoding="utf-8") as f:
-                    pass
-                known_files_path = "known_files.txt"
-                if os.path.exists(known_files_path):
-                    with open(known_files_path, "w", encoding="utf-8") as f:
                         pass
+                    with open(FULL_HISTORY_FILE, "w", encoding="utf-8") as f:
+                        pass
+                    known_files_path = "known_files.txt"
+                    if os.path.exists(known_files_path):
+                        with open(known_files_path, "w", encoding="utf-8") as f:
+                            pass
 
-                # --- Stop all background processes ---
-                try:
-                    from pathlib import Path
-                    import json
-                    import psutil
+                    # --- Stop all background processes ---
+                    try:
+                        from pathlib import Path
+                        import json
+                        import psutil
 
-                    bg_file = Path("background_processes.json")
-                    if bg_file.exists():
-                        with bg_file.open("r", encoding="utf-8") as f:
-                            bg_data = json.load(f)
-                        for proc_info in bg_data.values():
-                            pid = proc_info.get("pid")
-                            if pid:
-                                try:
-                                    p = psutil.Process(pid)
-                                    p.terminate()
-                                    print(f"{Fore.GREEN}Terminated background process PID {pid}{Style.RESET_ALL}")
-                                except Exception as e:
-                                    print(f"{Fore.RED}Could not terminate PID {pid}: {e}{Style.RESET_ALL}")
-                        # Clear the file after stopping processes
-                        with bg_file.open("w", encoding="utf-8") as f:
-                            f.write("{}")
-                except Exception as e:
-                    print(f"{Fore.RED}Failed to stop background processes: {e}{Style.RESET_ALL}")
+                        bg_file = Path("background_processes.json")
+                        if bg_file.exists():
+                            with bg_file.open("r", encoding="utf-8") as f:
+                                bg_data = json.load(f)
+                            for proc_info in bg_data.values():
+                                pid = proc_info.get("pid")
+                                if pid:
+                                    try:
+                                        p = psutil.Process(pid)
+                                        p.terminate()
+                                        print(f"{Fore.GREEN}Terminated background process PID {pid}{Style.RESET_ALL}")
+                                    except Exception as e:
+                                        print(f"{Fore.RED}Could not terminate PID {pid}: {e}{Style.RESET_ALL}")
+                            # Clear the file after stopping processes
+                            with bg_file.open("w", encoding="utf-8") as f:
+                                f.write("{}")
+                    except Exception as e:
+                        print(f"{Fore.RED}Failed to stop background processes: {e}{Style.RESET_ALL}")
 
-                os.system('cls' if os.name == 'nt' else 'clear')
-                print(f"{Fore.GREEN}Chat history cleared. Starting fresh!{Style.RESET_ALL}")
-                system_prompt = load_system_prompt()
-                summary = load_summary()
-                memory = load_memory()
-                if summary:
-                    system_prompt += "\n\n[CONVERSATION SUMMARY]\n" + summary
-                if memory:
-                    system_prompt += "\n\n[MEMORY]\n" + memory
-                function_calls_guide = load_function_calls_guide()
-                function_calls_signatures = load_function_calls_signatures()
-                combined_prompt = system_prompt
-                if function_calls_guide:
-                    combined_prompt += "\n\n[FUNCTION CALLS GUIDE]\n" + function_calls_guide
-                if function_calls_signatures:
-                    combined_prompt += "\n\n[FUNCTION CALLS]\n" + function_calls_signatures
-                history = load_history(combined_prompt)
-                chat = model.start_chat(history=history)
-                continue
-
-            if user_input.lower().startswith("/addkey"):
-                new_key = input("Enter new API key: ").strip()
-                # Read existing keys from .env
-                existing_keys = []
-                if os.path.exists(".env"):
-                    with open(".env", "r", encoding="utf-8") as f:
-                        for line in f:
-                            if line.startswith("GOOGLE_API_KEY_"):
-                                existing_keys.append(line.strip().split("=", 1)[-1])
-                if new_key in existing_keys:
-                    print(f"{Fore.YELLOW}API key already exists in .env!{Style.RESET_ALL}")
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    print(f"{Fore.GREEN}Chat history cleared. Starting fresh!{Style.RESET_ALL}")
+                    system_prompt = load_system_prompt()
+                    summary = load_summary()
+                    memory = load_memory()
+                    if summary:
+                        system_prompt += "\n\n[CONVERSATION SUMMARY]\n" + summary
+                    if memory:
+                        system_prompt += "\n\n[MEMORY]\n" + memory
+                    function_calls_guide = load_function_calls_guide()
+                    function_calls_signatures = load_function_calls_signatures()
+                    combined_prompt = system_prompt
+                    if function_calls_guide:
+                        combined_prompt += "\n\n[FUNCTION CALLS GUIDE]\n" + function_calls_guide
+                    if function_calls_signatures:
+                        combined_prompt += "\n\n[FUNCTION CALLS]\n" + function_calls_signatures
+                    history = load_history(combined_prompt)
+                    chat = model.start_chat(history=history)
                     continue
-                # Find the next available index
-                idx = 1
-                while f"GOOGLE_API_KEY_{idx}" in [f"GOOGLE_API_KEY_{i+1}" for i in range(len(existing_keys))]:
-                    idx += 1
-                with open(".env", "a", encoding="utf-8") as f:
-                    f.write(f"\nGOOGLE_API_KEY_{idx}={new_key}")
-                # Reload environment and update API_KEYS
-                load_dotenv(override=True)
-                API_KEYS[:] = [
-                    os.getenv(f"GOOGLE_API_KEY_{i+1}") for i in range(20)
-                ]
-                print(f"{Fore.GREEN}API key added as GOOGLE_API_KEY_{idx}.{Style.RESET_ALL}")
-                continue
-            elif user_input.lower().startswith("/listkeys"):
-                print("Loaded API keys:")
-                for idx, key in enumerate(API_KEYS, 1):
-                    if key:
-                        print(f"Key {idx}: {key[:6]}...{key[-4:]}")
-                    else:
-                        print(f"Key {idx}: [empty]")
-                continue
-            elif user_input.lower().startswith("/setprompt"):
-                new_prompt = input("Enter new system prompt: ").strip()
-                with open("system_prompt_help.txt", "w", encoding="utf-8") as f:
-                    f.write(new_prompt)
-                print(f"{Fore.GREEN}System prompt updated.{Style.RESET_ALL}")
-                continue
-            elif user_input.lower().startswith("/showprompt"):
-                print(f"{Fore.CYAN}Current system prompt:{Style.RESET_ALL}")
-                print(load_system_prompt())
-                continue
-            elif user_input.lower() == "/help":
-                print(f"""{Fore.YELLOW}Available commands:{Style.RESET_ALL}
+
+                if user_input.lower().startswith("/addkey"):
+                    new_key = input("Enter new API key: ").strip()
+                    # Read existing keys from .env
+                    existing_keys = []
+                    if os.path.exists(".env"):
+                        with open(".env", "r", encoding="utf-8") as f:
+                            for line in f:
+                                if line.startswith("GOOGLE_API_KEY_"):
+                                    existing_keys.append(line.strip().split("=", 1)[-1])
+                    if new_key in existing_keys:
+                        print(f"{Fore.YELLOW}API key already exists in .env!{Style.RESET_ALL}")
+                        continue
+                    # Find the next available index
+                    idx = 1
+                    while f"GOOGLE_API_KEY_{idx}" in [f"GOOGLE_API_KEY_{i+1}" for i in range(len(existing_keys))]:
+                        idx += 1
+                    with open(".env", "a", encoding="utf-8") as f:
+                        f.write(f"\nGOOGLE_API_KEY_{idx}={new_key}")
+                    # Reload environment and update API_KEYS
+                    load_dotenv(override=True)
+                    API_KEYS[:] = [
+                        os.getenv(f"GOOGLE_API_KEY_{i+1}") for i in range(20)
+                    ]
+                    print(f"{Fore.GREEN}API key added as GOOGLE_API_KEY_{idx}.{Style.RESET_ALL}")
+                    continue
+                elif user_input.lower().startswith("/listkeys"):
+                    print("Loaded API keys:")
+                    for idx, key in enumerate(API_KEYS, 1):
+                        if key:
+                            print(f"Key {idx}: {key[:6]}...{key[-4:]}")
+                        else:
+                            print(f"Key {idx}: [empty]")
+                    continue
+                elif user_input.lower().startswith("/setprompt"):
+                    new_prompt = input("Enter new system prompt: ").strip()
+                    with open("system_prompt_help.txt", "w", encoding="utf-8") as f:
+                        f.write(new_prompt)
+                    print(f"{Fore.GREEN}System prompt updated.{Style.RESET_ALL}")
+                    continue
+                elif user_input.lower().startswith("/showprompt"):
+                    print(f"{Fore.CYAN}Current system prompt:{Style.RESET_ALL}")
+                    print(load_system_prompt())
+                    continue
+                elif user_input.lower() == "/help":
+                    print(f"""{Fore.YELLOW}Available commands:{Style.RESET_ALL}
   /addkey      - Add a new API key
   /listkeys    - List loaded API keys
   /setprompt   - Change the system prompt
@@ -806,18 +812,25 @@ def main():
   /exit        - Quit
   /plugins     - List available plugin functions
 """)
-                continue
+                    continue
 
-            # User input
-            append_user_history("user", user_input)
-            append_ai_history("user", user_input)
+                # User input
+                append_user_history("user", user_input)
+                append_ai_history("user", user_input)
+                ai_input = user_input
+            else:
+                # Use system message as AI input, and append to history
+                append_user_history("system", system_msg)
+                append_ai_history("system", system_msg)
+                ai_input = system_msg
+                system_msg = None  # Reset after use
 
             background_errors = pop_background_errors()
             full_input = (
                 f"[SYSTEM PROMPT]\n{system_prompt}\n\n"
                 f"[FUNCTION CALLS GUIDE]\n{function_calls_guide}\n\n"
                 f"[FUNCTION CALLS]\n{function_calls_signatures}\n\n"
-                f"[USER MESSAGE]\n{user_input}"
+                f"[USER MESSAGE]\n{ai_input}"
             )
             if background_errors:
                 full_input += f"\n\n{background_errors}"
@@ -829,115 +842,41 @@ def main():
 
             append_user_history("model", response.text)
             append_ai_history("model", response.text)
-
             response_text_no_thinking = remove_thinking_sections(response.text)
-            print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}")
-            print()
+            print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}\n")
 
+            # 4. Extract and handle function calls
             response_text = response.text
-            response_text_no_thinking = remove_thinking_sections(response.text)
-            while True:
-                calls = extract_function_calls(response_text)
-                if not calls:
-                    break
+            function_calls = extract_function_calls(response_text)
+            if not function_calls:
+                system_msg = None  # No system message to send, next loop will prompt user
+                continue
 
-                system_msgs = []
-                processed_calls = set()
-                prev_response_text = response_text
-
-                for call in calls:
-                    if call in processed_calls:
-                        continue
-                    processed_calls.add(call)
-
-                    func_result, is_immediate = handle_function_call(call)
-                    response_text = response_text.replace(call, "")
-                    if func_result:
-                        if isinstance(func_result, dict) and "ai_text" in func_result and "text" in func_result:
-                            print(func_result["text"])
-                            append_user_history("system", func_result["text"])
-                            append_ai_history("system", func_result["ai_text"])
-                            response = try_send_message(chat, func_result["ai_text"])
-                            append_user_history("model", response.text)
-                            append_ai_history("model", response.text)
-                            response_text_no_thinking = remove_thinking_sections(response.text)
-                            print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}")
-                            print()
-                            response_text = response.text
-                            response_text_no_thinking = remove_thinking_sections(response.text)
-                            continue
-                        if "image" in func_result:
-                            image_bytes = func_result.get("image_bytes")
-                            mime = func_result.get("mime_type", "image/jpeg")
-                            ai_message = func_result.get("text", f"[Image: {func_result.get('image')}]")
-                            append_user_history("system", ai_message)
-                            append_ai_history("system", ai_message)
-                            ascii_art = func_result.get("ascii_art")
-                            if ascii_art:
-                                print(ascii_art)
-                            if image_bytes:
-                                response = try_send_message(
-                                    chat,
-                                    [
-                                        {"text": ai_message},
-                                        {"mime_type": mime, "data": image_bytes}
-                                    ]
-                                )
-                                append_user_history("model", response.text)
-                                append_ai_history("model", response.text)
-                                response_text_no_thinking = remove_thinking_sections(response.text)
-                                print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}")
-                                print()
-                                response_text = response.text
-                                response_text_no_thinking = remove_thinking_sections(response.text)
-                            else:
-                                print(f"{Fore.RED}[SYSTEM] No image bytes to send to AI.{Style.RESET_ALL}")
-                            continue
-                        elif "text" in func_result:
-                            msg = func_result["text"]
-                            if msg and msg.strip():
-                                system_msgs.append(msg)
-                                if last_read_data and isinstance(last_read_data, dict):
-                                    if last_read_data.get("type") == "text":
-                                        file_msg = f"[File content: {last_read_data['path']}]\n{last_read_data['content']}"
-                                        append_user_history("system", file_msg)
-                                        append_ai_history("system", file_msg)
-                                    elif last_read_data.get("type") == "image":
-                                        img_msg = f"[Image: {last_read_data.get('path', 'Unknown path')}]"
-                                        append_user_history("system", img_msg)
-                                        append_ai_history("system", img_msg)
-                                    elif last_read_data.get("type") == "directory" and "items" in last_read_data:
-                                        dir_listing = "\n".join(last_read_data["items"])
-                                        dir_msg = f"[Directory listing: {last_read_data['path']}]\n{dir_listing}"
-                                        append_user_history("system", dir_msg)
-                                        append_ai_history("system", dir_msg)
-                                        print(dir_listing)
-
-                if response_text == prev_response_text:
-                    break
-
-                if system_msgs:
-                    system_msg = "[FUNCTION RESULT; MESSAGE FROM THE SYSTEM]\n" + "\n".join(system_msgs)
-                    append_user_history("system", system_msg)
-                    append_ai_history("system", system_msg)
-                    print(system_msg)
-                    response = try_send_message(chat, system_msg)
-                    if not response or not getattr(response, "text", None) or not response.text.strip():
-                        print("[SYSTEM] Gemini did not respond or returned empty message.")
-                        break
-                    append_user_history("model", response.text)
-                    append_ai_history("model", response.text)
-                    response_text_no_thinking = remove_thinking_sections(response.text)
-                    print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}")
-                    print()
-                    response_text = response.text
-                    response_text_no_thinking = remove_thinking_sections(response.text)
+            # Handle all function calls and collect results
+            system_msgs = []
+            processed_calls = set()
+            for call in function_calls:
+                if call in processed_calls:
                     continue
-                else:
-                    calls = extract_function_calls(response_text)
-                    if calls:
-                        continue
-                    break
+                processed_calls.add(call)
+                func_result, _ = handle_function_call(call)
+                if func_result:
+                    # Centralize result formatting
+                    if isinstance(func_result, dict):
+                        user_msg = func_result.get("text", "")
+                        ai_msg = func_result.get("ai_text", user_msg)
+                        if user_msg:
+                            print(user_msg)
+                        system_msgs.append(ai_msg)
+                    elif isinstance(func_result, str):
+                        print(func_result)
+                        system_msgs.append(func_result)
+            # Prepare system message for next loop
+            if system_msgs:
+                system_msg = "[FUNCTION RESULT; MESSAGE FROM THE SYSTEM]\n" + "\n".join(system_msgs)
+            else:
+                system_msg = None
+
             check_and_summarize_if_needed(chat, chat.history)
     except KeyboardInterrupt:
         print("\nSummarizing conversation before exit...")

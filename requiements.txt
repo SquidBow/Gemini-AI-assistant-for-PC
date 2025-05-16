@@ -1,0 +1,13 @@
+google-generativeai
+python-dotenv
+colorama
+selenium
+pillow
+readability-lxml
+watchdog
+psutil
+chardet
+py_compile
+requests
+lxml
+beautifulsoup4
