@@ -17,7 +17,7 @@ load_dotenv()
 
 HISTORY_FILE = "chat_history.txt"
 FULL_HISTORY_FILE = "full_chat_history.txt"
-PROMPT_FILE = "system_prompt_help.txt"
+PROMPT_FILE = "system_prompt.txt"
 model = genai.GenerativeModel("gemini-2.0-flash") #gemini-2.0-flash-exp
 
 API_KEYS = [
@@ -645,6 +645,9 @@ def main():
                 print()
     system_msg = None  # Holds system message to send to AI (function results, etc.)
 
+    # Add this before your main loop
+    message_counter = 4
+
     try:
         while True:
             # 1. Get user input if no pending system message
@@ -826,12 +829,22 @@ def main():
                 system_msg = None  # Reset after use
 
             background_errors = pop_background_errors()
-            full_input = (
-                f"[SYSTEM PROMPT]\n{system_prompt}\n\n"
-                f"[FUNCTION CALLS GUIDE]\n{function_calls_guide}\n\n"
-                f"[FUNCTION CALLS]\n{function_calls_signatures}\n\n"
-                f"[USER MESSAGE]\n{ai_input}"
-            )
+
+            message_counter += 1
+
+            if message_counter % 5 == 0 and function_calls_guide:
+                full_input = (
+                    f"[SYSTEM PROMPT]\n{system_prompt}\n\n"
+                    f"[FUNCTION CALLS GUIDE]\n{function_calls_guide}\n\n"
+                    f"[FUNCTION CALLS]\n{function_calls_signatures}\n\n"
+                    f"[USER MESSAGE]\n{ai_input}"
+                )
+            else:
+                full_input = (
+                    f"[SYSTEM PROMPT]\n{system_prompt}\n\n"
+                    f"[FUNCTION CALLS]\n{function_calls_signatures}\n\n"
+                    f"[USER MESSAGE]\n{ai_input}"
+                )
             if background_errors:
                 full_input += f"\n\n{background_errors}"
 
