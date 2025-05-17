@@ -31,8 +31,9 @@ def download_google(url="Your URL", filepath="C:/Other Programs/Programing/Proje
         response = requests.get(url, stream=True)
         response.raise_for_status()
 
-        # Extract filename from URL if not provided
-        if os.path.isdir(filepath):
+        _, ext = os.path.splitext(filepath)
+        # Always treat as directory if no extension
+        if not ext:
             url_path = urlparse(url).path
             filename = os.path.basename(url_path)
             if not filename:
@@ -47,6 +48,8 @@ def download_google(url="Your URL", filepath="C:/Other Programs/Programing/Proje
                 count += 1
             filepath = f"{name}_{count}{ext}"
 
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)  # Always create parent dirs
+
         with open(filepath, "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):
                 file.write(chunk)
@@ -57,11 +60,3 @@ def download_google(url="Your URL", filepath="C:/Other Programs/Programing/Proje
         return f"Error downloading {url}: {e}"
     except Exception as e:
         return f"An error occurred: {e}"
-
-
-if __name__ == '__main__':
-    # Example usage (replace with your desired URL and filepath)
-    download_url = "https://www.easygifanimator.net/images/samples/video-to-gif-sample.gif"
-    save_path = "C:/Other Programs/Programing/Projects/Projects VSCode/PersonalAI/downloads"
-    result = download_google(url=download_url, filepath=save_path)
-    print(result)

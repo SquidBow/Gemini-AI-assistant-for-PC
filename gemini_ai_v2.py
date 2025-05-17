@@ -141,7 +141,6 @@ def parse_function_call(call_str):
                 val = ast.get_source_segment(fake_func, kw.value)
             args_dict[kw.arg] = val
     except Exception as e:
-        print(f"[DEBUG] parse_function_call AST failed: {e}")
         # fallback: try to extract at least filepath
         filepath_match = re.search(r'filepath\s*=\s*["\']([^"\']+)["\']', args_str)
         if filepath_match:
@@ -191,28 +190,14 @@ def handle_function_call(response_text):
 
             if isinstance(result, dict):
                 if result.get("type") == "image":
-                    image_bytes = result.get("image_bytes")
-                    image_url = result.get("image_url")
-                    ascii_art = result.get("ascii_art", None)
-                    mime = result.get("mime_type", "image/jpeg")
-                    msg = f"[Image: {image_url}]"
-                    if ascii_art:
-                        msg += f"\n[ASCII ART]\n{ascii_art}"
-                    # Send image bytes if present
-                    if image_bytes:
-                        return {
-                            "image": image_url,
-                            "text": msg,
-                            "ascii_art": ascii_art,
-                            "image_bytes": image_bytes,
-                            "mime_type": mime
-                        }, True
-                    else:
-                        return {
-                            "image": image_url,
-                            "text": msg,
-                            "ascii_art": ascii_art
-                        }, True
+                    # Pass through all relevant fields for images
+                    return {
+                        "image_bytes": result.get("image_bytes"),
+                        "mime_type": result.get("mime_type"),
+                        "ascii_art": result.get("ascii_art"),
+                        "text": result.get("text", "[Image]"),
+                        "path": result.get("path", None),  # Optional, for reference
+                    }, True
                 elif result.get("type") == "text" and "content" in result:
                     content = result["content"]
                     if not content.strip():
@@ -229,14 +214,13 @@ def handle_function_call(response_text):
                     print("--- End Binary File Sample ---\n")
                     return {"text": result["sample"]}, True
                 elif result.get("type") == "webpage":
-                    # result["text"] is the full_content, result["summary"] is the summary
                     summary = result.get("summary", "")
                     full_content = result.get("text", "")
                     ai_text = result.get("ai_text", full_content)
                     url = args_dict.get("url") or args_dict.get("filepath") or args_dict.get("path") or ""
                     return {
-                        "text": summary,      # For user: only titles/urls
-                        "ai_text": ai_text,   # For AI: full text or just URLs, depending on content param
+                        "text": summary,
+                        "ai_text": ai_text,
                         "url": url
                     }, True
                 elif result.get("type") == "image_search":
@@ -244,8 +228,8 @@ def handle_function_call(response_text):
                     msg = result.get("text", "")
                     ai_msg = result.get("ai_text", msg)
                     return {
-                        "text": msg,      # For user: no ASCII art
-                        "ai_text": ai_msg,  # For AI: with or without ASCII art, depending on content param
+                        "text": msg,
+                        "ai_text": ai_msg,
                         "images": images
                     }, True
             # Fallback for other return types
@@ -259,15 +243,16 @@ def handle_function_call(response_text):
     return None, False
 
 def extract_function_calls(response_text):
+    # Remove code block markers if present
+    response_text = re.sub(r"^```(?:\w+)?|```$", "", response_text.strip(), flags=re.MULTILINE)
     known_funcs = get_known_functions()
     pattern = re.compile(rf"({'|'.join(map(re.escape, known_funcs))})\s*\((.*?)\)", re.DOTALL)
     calls = []
-    # Знаходити всі виклики функцій із відомого списку, навіть якщо це не валідний Python
+    # Find all matches and ensure parentheses are balanced for each
     for match in pattern.finditer(response_text):
-        # Весь виклик функції (з дужками)
         start = match.start()
         func_call = match.group(0)
-        # Перевірка на баланс дужок (для багаторядкових викликів)
+        # Check for balanced parentheses from the match start
         open_parens = 0
         for i, c in enumerate(response_text[start:]):
             if c == '(':
@@ -276,8 +261,8 @@ def extract_function_calls(response_text):
                 open_parens -= 1
                 if open_parens == 0:
                     func_call = response_text[start:start+i+1]
+                    calls.append(func_call)
                     break
-        calls.append(func_call)
     return calls
 
 def try_send_message(chat, message, stream=False):
@@ -566,7 +551,6 @@ def check_and_summarize_if_needed(chat, history):
 def main():
     if not os.path.exists(".env") and not os.path.exists("system_prompt_help.txt"):
         setup_wizard()
-        # --- Add these lines ---
         load_dotenv(override=True)
         global API_KEYS
         API_KEYS = [
@@ -596,7 +580,6 @@ def main():
     function_calls_guide = load_function_calls_guide()
     function_calls_signatures = load_function_calls_signatures()
 
-    # Combine for initial prompt
     combined_prompt = system_prompt
     if function_calls_guide:
         combined_prompt += "\n\n[FUNCTION CALLS GUIDE]\n" + function_calls_guide
@@ -623,14 +606,13 @@ def main():
                 if line.strip() == "":
                     if block:
                         block_text = "\n".join(block)
-                        # Colorize Gemini and You
                         if block_text.startswith("Gemini:"):
                             print(f"{Fore.YELLOW}Gemini:{Style.RESET_ALL}{block_text[len('Gemini:'):]}")
                         elif block_text.startswith("User:"):
                             print(f"{Fore.CYAN}You:{Style.RESET_ALL}{block_text[len('User:'):]}")
                         else:
                             print(block_text)
-                        print()  # print a single blank line between messages/blocks
+                        print()
                         block = []
                 else:
                     block.append(line.rstrip("\n"))
@@ -643,9 +625,7 @@ def main():
                 else:
                     print(block_text)
                 print()
-    system_msg = None  # Holds system message to send to AI (function results, etc.)
-
-    # Add this before your main loop
+    system_msg = None
     message_counter = 4
 
     try:
@@ -714,13 +694,11 @@ def main():
                     if os.path.exists(known_files_path):
                         with open(known_files_path, "w", encoding="utf-8") as f:
                             pass
-
-                    # --- Stop all background processes ---
+                    # Stop all background processes
                     try:
                         from pathlib import Path
                         import json
                         import psutil
-
                         bg_file = Path("background_processes.json")
                         if bg_file.exists():
                             with bg_file.open("r", encoding="utf-8") as f:
@@ -734,14 +712,13 @@ def main():
                                         print(f"{Fore.GREEN}Terminated background process PID {pid}{Style.RESET_ALL}")
                                     except Exception as e:
                                         print(f"{Fore.RED}Could not terminate PID {pid}: {e}{Style.RESET_ALL}")
-                            # Clear the file after stopping processes
                             with bg_file.open("w", encoding="utf-8") as f:
                                 f.write("{}")
                     except Exception as e:
                         print(f"{Fore.RED}Failed to stop background processes: {e}{Style.RESET_ALL}")
 
                     os.system('cls' if os.name == 'nt' else 'clear')
-                    print(f"{Fore.GREEN}Chat history cleared. Starting fresh!{Style.RESET_ALL}")
+                    print("Chat with Gemini (type '/exit', '/help' for all commands)\n")
                     system_prompt = load_system_prompt()
                     summary = load_summary()
                     memory = load_memory()
@@ -762,7 +739,6 @@ def main():
 
                 if user_input.lower().startswith("/addkey"):
                     new_key = input("Enter new API key: ").strip()
-                    # Read existing keys from .env
                     existing_keys = []
                     if os.path.exists(".env"):
                         with open(".env", "r", encoding="utf-8") as f:
@@ -772,13 +748,11 @@ def main():
                     if new_key in existing_keys:
                         print(f"{Fore.YELLOW}API key already exists in .env!{Style.RESET_ALL}")
                         continue
-                    # Find the next available index
                     idx = 1
                     while f"GOOGLE_API_KEY_{idx}" in [f"GOOGLE_API_KEY_{i+1}" for i in range(len(existing_keys))]:
                         idx += 1
                     with open(".env", "a", encoding="utf-8") as f:
                         f.write(f"\nGOOGLE_API_KEY_{idx}={new_key}")
-                    # Reload environment and update API_KEYS
                     load_dotenv(override=True)
                     API_KEYS[:] = [
                         os.getenv(f"GOOGLE_API_KEY_{i+1}") for i in range(20)
@@ -817,19 +791,16 @@ def main():
 """)
                     continue
 
-                # User input
                 append_user_history("user", user_input)
                 append_ai_history("user", user_input)
                 ai_input = user_input
             else:
-                # Use system message as AI input, and append to history
                 append_user_history("system", system_msg)
                 append_ai_history("system", system_msg)
                 ai_input = system_msg
-                system_msg = None  # Reset after use
+                system_msg = None
 
             background_errors = pop_background_errors()
-
             message_counter += 1
 
             if message_counter % 5 == 0 and function_calls_guide:
@@ -848,49 +819,80 @@ def main():
             if background_errors:
                 full_input += f"\n\n{background_errors}"
 
-            try:
+            # --- Main Gemini interaction loop ---
+            while True:
                 response = try_send_message(chat, full_input)
-            except generation_types.StopCandidateException as e:
-                continue
 
-            append_user_history("model", response.text)
-            append_ai_history("model", response.text)
-            response_text_no_thinking = remove_thinking_sections(response.text)
-            print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}\n")
+                response_text = response.text
+                function_calls = extract_function_calls(response_text)
 
-            # 4. Extract and handle function calls
-            response_text = response.text
-            function_calls = extract_function_calls(response_text)
-            if not function_calls:
-                system_msg = None  # No system message to send, next loop will prompt user
-                continue
+                append_user_history("model", response.text)
+                append_ai_history("model", response.text)
+                response_text_no_thinking = remove_thinking_sections(response.text)
+                if not response_text_no_thinking.strip():
+                    print(f"{Fore.YELLOW}Gemini:{Style.RESET_ALL} [No response, AI may be waiting for user input or further instruction.]\n")
+                else:
+                    print(f"\n{Fore.YELLOW}Gemini:{Style.RESET_ALL} {response_text_no_thinking}\n")
 
-            # Handle all function calls and collect results
-            system_msgs = []
-            processed_calls = set()
-            for call in function_calls:
-                if call in processed_calls:
-                    continue
-                processed_calls.add(call)
-                func_result, _ = handle_function_call(call)
-                if func_result:
+                if not function_calls:
+                    # No more function calls, break to user input
+                    break
+
+                # Execute all function calls and collect results
+                system_msgs = []
+                processed_calls = set()
+                for call in function_calls:
+                    if call in processed_calls:
+                        continue
+                    processed_calls.add(call)
+                    func_result, _ = handle_function_call(call)
+
                     # Centralize result formatting
-                    if isinstance(func_result, dict):
-                        user_msg = func_result.get("text", "")
-                        ai_msg = func_result.get("ai_text", user_msg)
-                        if user_msg:
-                            print(user_msg)
-                        system_msgs.append(ai_msg)
-                    elif isinstance(func_result, str):
-                        print(func_result)
-                        system_msgs.append(func_result)
-            # Prepare system message for next loop
-            if system_msgs:
-                system_msg = "[FUNCTION RESULT; MESSAGE FROM THE SYSTEM]\n" + "\n".join(system_msgs)
-            else:
-                system_msg = None
+                    if func_result:
+                        if isinstance(func_result, dict):
+                            user_msg = func_result.get("text", "")
+                            ai_msg = func_result.get("ai_text", user_msg)
+                            # If this is a webpage scrape, print summary to user, send full text to Gemini
+                            if func_result.get("ai_text"):
+                                if user_msg:
+                                    print(f"{user_msg}\n")
+                                system_msgs.append(func_result["ai_text"])
+                            elif "image_bytes" in func_result and "mime_type" in func_result:
+                                print(user_msg)
+                                append_user_history("system", user_msg)
+                                append_ai_history("system", user_msg)
+                                ascii_art = func_result.get("ascii_art")
+                                if ascii_art:
+                                    print(user_msg)
+                                    print(ascii_art)
+                                    combined = f"{user_msg}\n\n{ascii_art}"
+                                    append_user_history("system", combined)
+                                    append_ai_history("system", user_msg)
+                                else:
+                                    print(user_msg)
+                                    append_user_history("system", user_msg)
+                                    append_ai_history("system", user_msg)
+                                system_msgs.append(user_msg)
+                            else:
+                                if user_msg:
+                                    print(user_msg)
+                                    append_user_history("system", user_msg)
+                                    append_ai_history("system", user_msg)
+                                    system_msgs.append(user_msg)
+                        elif isinstance(func_result, str):
+                            print(func_result)
+                            append_user_history("system", func_result)
+                            append_ai_history("system", func_result)
+                            system_msgs.append(func_result)
 
-            check_and_summarize_if_needed(chat, chat.history)
+                # Prepare system message for next Gemini turn
+                if system_msgs:
+                    full_input = "[FUNCTION RESULT; MESSAGE FROM THE SYSTEM]\n" + "\n".join(system_msgs)
+                    ai_input = full_input  # For debug4scrape thissc printscraopesc
+                else:
+                    # No function results, break to user input
+                    break
+
     except KeyboardInterrupt:
         print("\nSummarizing conversation before exit...")
         maybe_summarize_history(chat, chat.history)

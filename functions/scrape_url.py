@@ -1,17 +1,21 @@
+import shutil
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import os
 import uuid
 import hashlib
 from readability import Document
 from PIL import Image, ImageEnhance
-from functions.function_calls import image_to_ascii_color
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import time
 
 def scrape_url(url="scrape site for its contents or a url of an image to see it"):
     """
-    internal. Scrapes a URL for text and image URLs.
+    Scrapes a URL for text and image URLs, excluding navigation, footer, header, ads, and other non-content elements.
     If the URL is a direct image, downloads and returns it as an image.
     """
+
     try:
         headers = {
             'User-Agent': (
@@ -59,11 +63,10 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
                 pass
             return {
                 "type": "image",
-                "text": f"[Downloaded image from {url}]",
-                "image_bytes": img_data,
-                "image_url": url,
-                "ascii_art": ascii_art,
-                "mime_type": "image/png" if ext.lower() == ".png" else "image/jpeg"
+                "image_bytes": img_data,  # The raw bytes you downloaded
+                "mime_type": "image/png", # Or whatever is correct
+                "ascii_art": ascii_art,   # Optional
+                "text": f"[Image: {url}]", # Optional
             }
 
         # Otherwise, treat as a webpage
@@ -71,36 +74,94 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
         response.raise_for_status()
         html = response.text
 
-        # Extract all paragraphs for better coverage (especially Wikipedia)
         soup = BeautifulSoup(html, 'html.parser')
-        paragraphs = [p.get_text(separator=" ", strip=True) for p in soup.find_all('p')]
-        text = "\n\n".join(paragraphs)
 
-        # Fallback: if still too short, use the whole body text
-        if len(text) < 500:
-            body = soup.body
-            if body:
-                text = body.get_text(separator="\n", strip=True)
-            else:
-                text = soup.get_text(separator="\n", strip=True)
+        # Remove unwanted elements
+        for tag in soup(['nav', 'footer', 'header', 'aside', 'form', 'script', 'style', 'noscript', 'svg', 'canvas', 'iframe', 'input', 'button', 'figure', 'figcaption', 'link', 'meta', 'object', 'embed', 'ads', 'advertisement']):
+            tag.decompose()
 
-        # Get images from the whole page, not just main content
+        # Remove comments
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+
+        # Get all visible text
+        def visible_text(element):
+            if element.parent.name in ['style', 'script', 'head', 'title', 'meta', '[document]']:
+                return False
+            if isinstance(element, Comment):
+                return False
+            return True
+
+        # After soup = BeautifulSoup(html, 'html.parser')
+        # Try to find the main article container(s)
+        article_selectors = [
+            {'name': 'section', 'attrs': {'class': 'article-body'}},
+            {'name': 'div', 'attrs': {'class': 'article-body'}},
+            {'name': 'article'},
+            # Add more selectors as needed for the site
+        ]
+
+        article_texts = []
+        for sel in article_selectors:
+            for tag in soup.find_all(sel.get('name'), sel.get('attrs', {})):
+                article_texts.append(tag.get_text(separator="\n", strip=True))
+
+        if article_texts:
+            text = "\n\n".join(article_texts)
+        else:
+            # fallback to all visible text as before
+            texts = soup.findAll(string=True)
+            visible_texts = filter(visible_text, texts)
+            text = "\n".join(t.strip() for t in visible_texts if t.strip())
+
+        # Remove lines containing "Advertisement" or "Continue Reading"
+        lines = [line for line in text.split('\n') if "Advertisement" not in line and "Continue Reading" not in line]
+        text = "\n".join(lines)
+
+        # Get up to 3 images from the remaining content
         img_urls = []
         for img in soup.find_all('img'):
             src = img.get('src')
             if src and not src.lower().endswith('.svg'):
-                # Make relative URLs absolute
                 if not src.startswith("http"):
                     src = requests.compat.urljoin(url, src)
                 img_urls.append(src)
-        # Limit to 3 images for performance
         img_urls = img_urls[:3]
+
+        # Get the first non-empty paragraph as summary, and prepend [Scraped url]: {url}
+        first_paragraph = next((p.strip() for p in text.split('\n') if p.strip()), "")
+        summary = f"[Scraped url]: {url}\n{first_paragraph}"
 
         return {
             "type": "webpage",
+            "summary": summary,
             "text": text,
             "images": img_urls
         }
     except Exception as e:
         import traceback
         return {"type": "error", "error": str(e), "trace": traceback.format_exc()}
+    
+
+def image_to_ascii_color(img, width=None):
+    """internal"""
+    ascii_chars = "█▓▒░ "
+    if width is None:
+        try:
+            width = shutil.get_terminal_size().columns
+        except Exception:
+            width = 80  # fallback
+    img = img.convert("RGB")
+    w, h = img.size
+    aspect_ratio = h / w
+    new_height = int(aspect_ratio * width * 0.55)
+    img = img.resize((width, new_height))
+    pixels = list(img.getdata())
+    ascii_str = ""
+    for i, (r, g, b) in enumerate(pixels):
+        brightness = int(0.299*r + 0.587*g + 0.114*b)
+        char = ascii_chars[brightness * (len(ascii_chars)-1) // 255]
+        ascii_str += f"\033[38;2;{r};{g};{b}m{char}\033[0m"
+        if (i + 1) % width == 0:
+            ascii_str += "\n"
+    return ascii_str

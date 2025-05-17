@@ -13,6 +13,7 @@ import chardet
 import json
 import sys
 import py_compile
+from functions.scrape_url import scrape_url  # Add this import at the top of your file
 
 
 KNOWN_FILES_PATH = Path("known_files.txt")
@@ -148,41 +149,37 @@ def create_file(filepath, contents=None, append=False):
         return f"Error creating/appending file: {e}"
 
 def edit_file(filepath, old_block, new_block):
+    from pathlib import Path
+    import os
+
+    path = Path(os.path.expanduser(filepath)).resolve()
+    if not path.exists():
+        return {"type": "text", "content": f"Error: File does not exist: {path}"}
+
+    # Read file content
     try:
-        path = Path(os.path.expanduser(filepath)).resolve()
-        if not path.exists():
-            return f"Error: File does not exist: {path}"
-        backup_file(path)
-        content = try_read_file_with_encodings(path)
-        if content is None:
-            return f"Error reading file with any known encoding: {path}"
+        with path.open("r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        return {"type": "text", "content": f"Error reading file: {e}"}
 
-        # Only decode escapes if it doesn't look like code
-        for var_name in ["old_block", "new_block"]:
-            val = locals()[var_name]
-            if isinstance(val, str) and not ("def " in val or "import " in val or "class " in val):
-                try:
-                    locals()[var_name] = val.encode("utf-8").decode("unicode_escape")
-                except Exception:
-                    pass
-
-        old_block = locals()["old_block"]
-        new_block = locals()["new_block"]
-
+    # Edit content
+    if old_block == "":
+        # Overwrite file with new_block
+        new_content = new_block
+    else:
         if old_block not in content:
-            return "Error: Old block not found in file."
+            return {"type": "text", "content": f"Error: Old block not found in file."}
         new_content = content.replace(old_block, new_block, 1)
+
+    # Write new content
+    try:
         with path.open("w", encoding="utf-8") as f:
             f.write(new_content)
-        abs_path = str(path)
-        proc_info = BACKGROUND_PROCESSES.get(abs_path)
-        if proc_info and psutil.pid_exists(proc_info["pid"]):
-            terminate_execution(abs_path)
-            execute(abs_path, time_to_execute=proc_info.get("time_to_execute", 0), background=True)
-            return "File edited successfully. Relaunched running process."
-        return "File edited successfully."
     except Exception as e:
-        return f"Error editing file: {e}"
+        return {"type": "text", "content": f"Error writing file: {e}"}
+
+    return {"type": "text", "content": f"[Function] Edited file: {filepath}"}
 
 def delete(path):
     abs_path = str(Path(os.path.expanduser(path)).resolve())
@@ -208,6 +205,10 @@ def delete(path):
 def read(path="Path to the image/file/folder"):
     if not path:
         return "Error: No path provided."
+    if isinstance(path, str):
+        path = path.strip().replace("\\", "/")  # Normalize slashes here!
+        if path.startswith("http:") or path.startswith("https:"):
+            return scrape_url(path)
     abs_path = str(Path(os.path.expanduser(path)).resolve())
     p = Path(abs_path)
     if not p.exists():
@@ -234,23 +235,15 @@ def read(path="Path to the image/file/folder"):
     # Try image first
     try:
         img = Image.open(p)
-        img.verify()  # Verify it's a valid image
-        img = Image.open(p)  # Reopen after verify (PIL quirk)
-        if img.format not in ["PNG", "JPEG", "JPG", "BMP", "GIF"]:
-            raise ValueError("Unsupported image format")
-        img = img.convert("RGB")  # Ensure compatibility for ASCII art
-        img = ImageEnhance.Brightness(img).enhance(0.5)
-        try:
-            ascii_art = image_to_ascii_color(img)
-        except Exception:
-            ascii_art = "[Could not generate ASCII art for this image.]"
+        buffered = BytesIO()
+        img.save(buffered, format=img.format or "PNG")
+        ascii_art = image_to_ascii_color(img, width=120)
         info = {
             "type": "image",
-            "path": abs_path,
-            "format": img.format,
-            "size": img.size,
-            "mode": img.mode,
-            "ascii_art": ascii_art
+            "image_bytes": buffered.getvalue(),  # The raw bytes you downloaded
+            "mime_type": "image/png", # Or whatever is correct
+            "ascii_art": ascii_art,   # Optional
+            "text": f"[Image: {abs_path}]", # Optional
         }
         add_known_file(abs_path)
         return info

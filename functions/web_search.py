@@ -11,9 +11,10 @@ import urllib
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from functions.scrape_url import scrape_url
 
-def web_search(query="Your Search Query", search_type="webpage/image/video", get_results=5, content= False):
+def web_search(query="Your Search Query", search_type="webpage/image/video", get_results=5, content=False, min_size=None):
     """
     search_type: "webpage", "image", or "video"
+    min_size: string like "1920*1080", "1920:1080", or "1920;1080"
     """
     token_limit = 1000000
 
@@ -68,6 +69,20 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
     if search_type == "image":
         import time
         from selenium.webdriver.common.keys import Keys
+        from PIL import Image
+        import requests
+        from io import BytesIO
+
+        # --- Parse min_size ---
+        min_width = min_height = None
+        if min_size:
+            for sep in ('*', ':', ';', 'x', 'X'):
+                if sep in min_size:
+                    try:
+                        min_width, min_height = map(int, min_size.split(sep))
+                    except Exception:
+                        pass
+                    break
 
         options = Options()
         options.headless = True
@@ -85,60 +100,78 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.TAG_NAME, "img"))
             )
-            thumbnails = driver.find_elements(By.TAG_NAME, "img")
-            full_image_urls = []
 
-            for idx, thumb in enumerate(thumbnails[:get_results*2], 1):
-                try:
-                    driver.execute_script("arguments[0].scrollIntoView(true);", thumb)
-                    driver.execute_script("arguments[0].click();", thumb)
-                    try:
-                        WebDriverWait(driver, 1).until(
-                            lambda d: any(
-                                (l.text.strip() in ["Переглянути файл", "View file"]) and l.get_attribute("href")
-                                for l in d.find_elements(By.TAG_NAME, "a")
-                            )
-                        )
-                    except Exception:
-                        pass
-
-                    imgs = driver.find_elements(By.TAG_NAME, "img")
-                    links = driver.find_elements(By.TAG_NAME, "a")
-                    img_url = None
-                    for link in links:
-                        text = link.text.strip()
-                        href = link.get_attribute("href")
-                        if text in ["Переглянути файл", "View file"] and href and href.startswith("http"):
-                            img_url = href
-                            break
-
-                    if not img_url:
-                        for img in imgs:
-                            src = img.get_attribute("src")
-                            if src and src.startswith("http") and not src.startswith("https://duckduckgo.com/assets/"):
-                                if not src.endswith(".svg") and not src.startswith("data:"):
-                                    img_url = src
-                                    break
-
-                    if img_url:
-                        full_image_urls.append(img_url)
-                    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                    if len(full_image_urls) >= get_results:
-                        break
-                except Exception:
-                    continue
-
-            # Scrape each image URL for ASCII art and mime type
             images_info = []
-            from functions.scrape_url import scrape_url
-            for img_url in full_image_urls[:get_results]:
-                img_result = scrape_url(img_url)
-                if img_result.get("type") == "image":
-                    images_info.append({
-                        "url": img_url,
-                        "ascii_art": img_result.get("ascii_art"),
-                        "mime_type": img_result.get("mime_type"),
-                    })
+            checked_thumbs = set()
+            scroll_attempts = 0
+
+            while len(images_info) < get_results and scroll_attempts < 20:
+                thumbnails = driver.find_elements(By.TAG_NAME, "img")
+                for idx, thumb in enumerate(thumbnails):
+                    if len(images_info) >= get_results:
+                        break
+                    if thumb in checked_thumbs:
+                        continue
+                    checked_thumbs.add(thumb)
+                    try:
+                        driver.execute_script("arguments[0].scrollIntoView(true);", thumb)
+                        driver.execute_script("arguments[0].click();", thumb)
+                        try:
+                            WebDriverWait(driver, 0.2).until(
+                                lambda d: any(
+                                    (l.text.strip() in ["Переглянути файл", "View file"]) and l.get_attribute("href")
+                                    for l in d.find_elements(By.TAG_NAME, "a")
+                                )
+                            )
+                        except Exception:
+                            pass
+
+                        imgs = driver.find_elements(By.TAG_NAME, "img")
+                        links = driver.find_elements(By.TAG_NAME, "a")
+                        img_url = None
+                        for link in links:
+                            text = link.text.strip()
+                            href = link.get_attribute("href")
+                            if text in ["Переглянути файл", "View file"] and href and href.startswith("http"):
+                                img_url = href
+                                break
+
+                        if not img_url:
+                            for img in imgs:
+                                src = img.get_attribute("src")
+                                if src and src.startswith("http") and not src.startswith("https://duckduckgo.com/assets/"):
+                                    if not src.endswith(".svg") and not src.startswith("data:"):
+                                        img_url = src
+                                        break
+
+                        # --- Filter by min_size if set ---
+                        if img_url and (min_width or min_height):
+                            try:
+                                resp = requests.get(img_url, timeout=10)
+                                img = Image.open(BytesIO(resp.content))
+                                width, height = img.size
+                                if (min_width and width < min_width) or (min_height and height < min_height):
+                                    img_url = None  # Skip this image
+                            except Exception:
+                                img_url = None  # Skip if can't fetch or open image
+
+                        if img_url:
+                            img_result = scrape_url(img_url)
+                            if img_result.get("type") == "image":
+                                images_info.append({
+                                    "url": img_url,
+                                    "ascii_art": img_result.get("ascii_art"),
+                                    "mime_type": img_result.get("mime_type"),
+                                })
+                        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                    except Exception:
+                        continue
+
+                # Scroll to load more thumbnails if needed
+                if len(images_info) < get_results:
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(0.5)  # Reduced from 1 second to 0.2 seconds
+                    scroll_attempts += 1
 
             if not images_info:
                 return {
