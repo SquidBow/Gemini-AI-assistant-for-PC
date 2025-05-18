@@ -267,7 +267,7 @@ def hybrid_web_search(query, get_results=3):
 
 def search_google_images(query, get_results=5, min_img_size=None, content=False):
     """
-    Clicks each Google Images thumbnail (only large ones) to open the side panel.
+    Internal. Clicks each Google Images thumbnail (only large ones) to open the side panel.
     Returns a dict with image search results, similar to web_search.
     """
     from selenium import webdriver

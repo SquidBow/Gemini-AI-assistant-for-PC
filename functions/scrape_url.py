@@ -11,6 +11,7 @@ from selenium.webdriver.chrome.options import Options
 import time
 import re
 import undetected_chromedriver as uc
+from urllib.parse import urlparse, urljoin
 
 def scrape_url(url="scrape site for its contents or a url of an image to see it"):
     """
@@ -117,10 +118,7 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
         if article_texts:
             text = "\n\n".join(article_texts)
         else:
-            # fallback to all visible text as before
-            texts = soup.find_all(string=True)
-            visible_texts = filter(visible_text, texts)
-            text = "\n".join(t.strip() for t in visible_texts if t.strip())
+            text = html_to_text_with_links(soup, url)
 
         # Remove lines containing "Advertisement" or "Continue Reading"
         lines = [line for line in text.split('\n') if "Advertisement" not in line and "Continue Reading" not in line]
@@ -241,9 +239,7 @@ def scrape_url_undetected(url):
     if article_texts:
         text = "\n\n".join(article_texts)
     else:
-        texts = soup.find_all(string=True)
-        visible_texts = filter(visible_text, texts)
-        text = "\n".join(t.strip() for t in visible_texts if t.strip())
+        text = html_to_text_with_links(soup, url)
 
     lines = [line for line in text.split('\n') if "Advertisement" not in line and "Continue Reading" not in line]
     text = "\n".join(lines)
@@ -267,3 +263,48 @@ def scrape_url_undetected(url):
         "text": text,
         "images": img_urls
     }
+
+def html_to_text_with_links(soup, page_url=None):
+    """
+    Internal. Convert soup to text, formatting hyperlinks as hypertext(url:url).
+    For product links, always use the full site URL.
+    """
+    from urllib.parse import urlparse, urljoin
+
+    # Dynamically determine base URL from the page_url
+    base_url = ""
+    if page_url:
+        parsed = urlparse(page_url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    # Check for <base href="..."> tag
+    base_tag = soup.find('base', href=True)
+    if base_tag:
+        base_url = base_tag['href']
+
+    for a in soup.find_all('a', href=True):
+        link_text = a.get_text(strip=True)
+        href = a['href']
+        # Make relative links absolute using urljoin
+        href = urljoin(base_url, href)
+        if link_text and href.startswith("http"):
+            a.replace_with(f"{link_text}(hypertext_url:{href})")
+        else:
+            a.replace_with(link_text)
+    # Now get all visible text as before
+    def visible_text(element):
+        from bs4 import Comment
+        if element.parent.name in ['style', 'script', 'head', 'title', 'meta', '[document]']:
+            return False
+        if isinstance(element, Comment):
+            return False
+        return True
+    texts = soup.find_all(string=True)
+    visible_texts = filter(visible_text, texts)
+    return "\n".join(t.strip() for t in visible_texts if t.strip())
+
+if __name__ == "__main__":
+    # Example usage
+    url = "https://www.amazon.com/s?k=pc&crid=30YVDU998VIOI&sprefix=p%2Caps%2C172"
+    result = scrape_url(url)
+    print(result)
