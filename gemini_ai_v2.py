@@ -863,13 +863,11 @@ def main():
                                 append_ai_history("system", user_msg)
                                 ascii_art = func_result.get("ascii_art")
                                 if ascii_art:
-                                    print(user_msg)
                                     print(ascii_art)
                                     combined = f"{user_msg}\n\n{ascii_art}"
                                     append_user_history("system", combined)
                                     append_ai_history("system", user_msg)
                                 else:
-                                    print(user_msg)
                                     append_user_history("system", user_msg)
                                     append_ai_history("system", user_msg)
                                 system_msgs.append(user_msg)

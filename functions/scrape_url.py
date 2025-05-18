@@ -9,6 +9,8 @@ from PIL import Image, ImageEnhance
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import time
+import re
+import undetected_chromedriver as uc
 
 def scrape_url(url="scrape site for its contents or a url of an image to see it"):
     """
@@ -22,7 +24,11 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
                 'Chrome/122.0.0.0 Safari/537.36'
-            )
+            ),
+            'Referer': 'https://www.google.com/',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Connection': 'keep-alive',
         }
         # Check if the URL is a direct image
         if any(url.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]) or "image" in requests.head(url, headers=headers, allow_redirects=True).headers.get("content-type", ""):
@@ -77,7 +83,9 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
         soup = BeautifulSoup(html, 'html.parser')
 
         # Remove unwanted elements
-        for tag in soup(['nav', 'footer', 'header', 'aside', 'form', 'script', 'style', 'noscript', 'svg', 'canvas', 'iframe', 'input', 'button', 'figure', 'figcaption', 'link', 'meta', 'object', 'embed', 'ads', 'advertisement']):
+        for tag in soup(['nav', 'footer', 'header', 'aside', 'form', 'script', 'style', 'noscript', 'svg', 'canvas', 'iframe', 'input', 'button', 'figure', 'figcaption', 'link', 'meta', 'object', 'embed', 'ads', 'advertisement', 'ul', 'ol']):
+            tag.decompose()
+        for tag in soup.find_all(class_=["filters", "refinements", "sidebar", "breadcrumbs"]):
             tag.decompose()
 
         # Remove comments
@@ -110,7 +118,7 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
             text = "\n\n".join(article_texts)
         else:
             # fallback to all visible text as before
-            texts = soup.findAll(string=True)
+            texts = soup.find_all(string=True)
             visible_texts = filter(visible_text, texts)
             text = "\n".join(t.strip() for t in visible_texts if t.strip())
 
@@ -130,7 +138,8 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
 
         # Get the first non-empty paragraph as summary, and prepend [Scraped url]: {url}
         first_paragraph = next((p.strip() for p in text.split('\n') if p.strip()), "")
-        summary = f"[Scraped url]: {url}\n{first_paragraph}"
+        title = soup.title.string.strip() if soup.title and soup.title.string else first_paragraph
+        summary = f"[Scraped url]: {title}\n{url}"
 
         return {
             "type": "webpage",
@@ -140,7 +149,29 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
         }
     except Exception as e:
         import traceback
-        return {"type": "error", "error": str(e), "trace": traceback.format_exc()}
+        error_str = str(e)
+        # Try backup if forbidden, blocked, or other HTTP errors
+        if (
+            "403" in error_str
+            or "Forbidden" in error_str
+            or "blocked" in error_str.lower()
+            or "Access Denied" in error_str
+            or "timed out" in error_str.lower()
+        ):
+            try:
+                return scrape_url_undetected(url)
+            except Exception as e2:
+                return {
+                    "type": "error",
+                    "error": f"Primary scrape failed with: {error_str}\nBackup scrape failed with: {e2}",
+                    "trace": traceback.format_exc()
+                }
+        else:
+            return {
+                "type": "error",
+                "error": error_str,
+                "trace": traceback.format_exc()
+            }
     
 
 def image_to_ascii_color(img, width=None):
@@ -165,3 +196,74 @@ def image_to_ascii_color(img, width=None):
         if (i + 1) % width == 0:
             ascii_str += "\n"
     return ascii_str
+
+def scrape_url_undetected(url):
+    """
+    Internal. Scrapes a URL for text and image URLs using undetected_chromedriver (for JS-heavy or protected sites).
+    """
+    options = uc.ChromeOptions()
+    driver = uc.Chrome(options=options)
+    try:
+        driver.get(url)
+        time.sleep(3)  # Give JS time to render; adjust as needed
+        html = driver.page_source
+    finally:
+        driver.quit()
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove unwanted elements
+    for tag in soup(['nav', 'footer', 'header', 'aside', 'form', 'script', 'style', 'noscript', 'svg', 'canvas', 'iframe', 'input', 'button', 'figure', 'figcaption', 'link', 'meta', 'object', 'embed', 'ads', 'advertisement', 'ul', 'ol']):
+        tag.decompose()
+    for tag in soup.find_all(class_=["filters", "refinements", "sidebar", "breadcrumbs"]):
+        tag.decompose()
+
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+
+    def visible_text(element):
+        if element.parent.name in ['style', 'script', 'head', 'title', 'meta', '[document]']:
+            return False
+        if isinstance(element, Comment):
+            return False
+        return True
+
+    article_selectors = [
+        {'name': 'section', 'attrs': {'class': 'article-body'}},
+        {'name': 'div', 'attrs': {'class': 'article-body'}},
+        {'name': 'article'},
+    ]
+
+    article_texts = []
+    for sel in article_selectors:
+        for tag in soup.find_all(sel.get('name'), sel.get('attrs', {})):
+            article_texts.append(tag.get_text(separator="\n", strip=True))
+
+    if article_texts:
+        text = "\n\n".join(article_texts)
+    else:
+        texts = soup.find_all(string=True)
+        visible_texts = filter(visible_text, texts)
+        text = "\n".join(t.strip() for t in visible_texts if t.strip())
+
+    lines = [line for line in text.split('\n') if "Advertisement" not in line and "Continue Reading" not in line]
+    text = "\n".join(lines)
+
+    img_urls = []
+    for img in soup.find_all('img'):
+        src = img.get('src')
+        if src and not src.lower().endswith('.svg'):
+            if not src.startswith("http"):
+                src = requests.compat.urljoin(url, src)
+            img_urls.append(src)
+    img_urls = img_urls[:3]
+
+    first_paragraph = next((p.strip() for p in text.split('\n') if p.strip()), "")
+    title = soup.title.string.strip() if soup.title and soup.title.string else first_paragraph
+    summary = f"[Scraped url]: {title}\n{url}"
+
+    return {
+        "type": "webpage",
+        "summary": summary,
+        "text": text,
+        "images": img_urls
+    }

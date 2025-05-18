@@ -3,15 +3,20 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 import time
 import sys
 import os
-
 import urllib
+from PIL import Image
+import requests
+from io import BytesIO
+import re
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from functions.scrape_url import scrape_url
 
-def web_search(query="Your Search Query", search_type="webpage/image/video", get_results=5, content=False, min_size=None):
+def web_search(query="Your Search Query", search_type="webpage/image/video", get_results=5, content=False, min_img_size="100x100"):
     """
     search_type: "webpage", "image", or "video"
     min_size: string like "1920*1080", "1920:1080", or "1920;1080"
@@ -20,12 +25,11 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
 
     if search_type == "video":
         options = Options()
-        options.headless = True
+        options.add_argument("--headless=new")  # Use the new headless mode
         driver = webdriver.Chrome(options=options)
         try:
             url = f"https://www.google.com/search?q={query}&tbm=vid&safe=off"
             driver.get(url)
-            import time
             time.sleep(2)
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "a"))
@@ -67,141 +71,8 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
             driver.quit()
 
     if search_type == "image":
-        import time
-        from selenium.webdriver.common.keys import Keys
-        from PIL import Image
-        import requests
-        from io import BytesIO
-
-        # --- Parse min_size ---
-        min_width = min_height = None
-        if min_size:
-            for sep in ('*', ':', ';', 'x', 'X'):
-                if sep in min_size:
-                    try:
-                        min_width, min_height = map(int, min_size.split(sep))
-                    except Exception:
-                        pass
-                    break
-
-        options = Options()
-        options.headless = True
-        driver = webdriver.Chrome(options=options)
-        try:
-            query_encoded = urllib.parse.quote_plus(query)
-            url = f"https://duckduckgo.com/?q={query_encoded}&iax=images&ia=images&kp=-2"
-            driver.get(url)
-            try:
-                consent_btn = driver.find_element(By.CSS_SELECTOR, "form button[type='submit']")
-                consent_btn.click()
-            except Exception:
-                pass
-
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.TAG_NAME, "img"))
-            )
-
-            images_info = []
-            checked_thumbs = set()
-            scroll_attempts = 0
-
-            while len(images_info) < get_results and scroll_attempts < 20:
-                thumbnails = driver.find_elements(By.TAG_NAME, "img")
-                for idx, thumb in enumerate(thumbnails):
-                    if len(images_info) >= get_results:
-                        break
-                    if thumb in checked_thumbs:
-                        continue
-                    checked_thumbs.add(thumb)
-                    try:
-                        driver.execute_script("arguments[0].scrollIntoView(true);", thumb)
-                        driver.execute_script("arguments[0].click();", thumb)
-                        try:
-                            WebDriverWait(driver, 0.2).until(
-                                lambda d: any(
-                                    (l.text.strip() in ["Переглянути файл", "View file"]) and l.get_attribute("href")
-                                    for l in d.find_elements(By.TAG_NAME, "a")
-                                )
-                            )
-                        except Exception:
-                            pass
-
-                        imgs = driver.find_elements(By.TAG_NAME, "img")
-                        links = driver.find_elements(By.TAG_NAME, "a")
-                        img_url = None
-                        for link in links:
-                            text = link.text.strip()
-                            href = link.get_attribute("href")
-                            if text in ["Переглянути файл", "View file"] and href and href.startswith("http"):
-                                img_url = href
-                                break
-
-                        if not img_url:
-                            for img in imgs:
-                                src = img.get_attribute("src")
-                                if src and src.startswith("http") and not src.startswith("https://duckduckgo.com/assets/"):
-                                    if not src.endswith(".svg") and not src.startswith("data:"):
-                                        img_url = src
-                                        break
-
-                        # --- Filter by min_size if set ---
-                        if img_url and (min_width or min_height):
-                            try:
-                                resp = requests.get(img_url, timeout=10)
-                                img = Image.open(BytesIO(resp.content))
-                                width, height = img.size
-                                if (min_width and width < min_width) or (min_height and height < min_height):
-                                    img_url = None  # Skip this image
-                            except Exception:
-                                img_url = None  # Skip if can't fetch or open image
-
-                        if img_url:
-                            img_result = scrape_url(img_url)
-                            if img_result.get("type") == "image":
-                                images_info.append({
-                                    "url": img_url,
-                                    "ascii_art": img_result.get("ascii_art"),
-                                    "mime_type": img_result.get("mime_type"),
-                                })
-                        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                    except Exception:
-                        continue
-
-                # Scroll to load more thumbnails if needed
-                if len(images_info) < get_results:
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(0.5)  # Reduced from 1 second to 0.2 seconds
-                    scroll_attempts += 1
-
-            if not images_info:
-                return {
-                    "type": "image_search",
-                    "images": [],
-                    "text": f"Image search results from: {url}\nNo images found.",
-                    "ai_text": f"Image search results from: {url}\nNo images found."
-                }
-
-            # Prepare a text summary for the user (NO ASCII ART)
-            summary_lines = []
-            for img in images_info:
-                summary_lines.append(f"Image: {img['url']}\n[MIME: {img['mime_type']}]\n")
-
-            # Prepare a text summary for the AI
-            ai_summary_lines = []
-            for img in images_info:
-                if content:
-                    ai_summary_lines.append(f"Image: {img['url']}\n[MIME: {img['mime_type']}]\n{img['ascii_art']}\n")
-                else:
-                    ai_summary_lines.append(f"Image: {img['url']}\n[MIME: {img['mime_type']}]\n")
-
-            return {
-                "type": "image_search",
-                "images": images_info,
-                "text": "\n".join(summary_lines),      # For user: no ASCII art
-                "ai_text": "\n".join(ai_summary_lines) # For AI: with or without ASCII art
-            }
-        finally:
-            driver.quit()
+    # Use the improved Google Images search
+        return search_google_images(query, get_results=get_results, min_img_size=min_img_size, content=content)
 
     # Default: webpage search using hybrid logic
     try:
@@ -292,8 +163,9 @@ def compare_scrape_methods(url):
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
         options = Options()
-        options.headless = True
+        options.add_argument("--headless=new")  # Use the new headless mode
         driver = webdriver.Chrome(options=options)
         driver.get(url)
         selenium_text = driver.find_element(By.TAG_NAME, "body").text
@@ -325,7 +197,7 @@ def hybrid_scrape_url(url):
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.common.by import By
         options = Options()
-        options.headless = True
+        options.add_argument("--headless=new")
         driver = webdriver.Chrome(options=options)
         driver.get(url)
         selenium_text = driver.find_element(By.TAG_NAME, "body").text
@@ -334,7 +206,22 @@ def hybrid_scrape_url(url):
         if selenium_text.strip():
             return {"type": "webpage", "title": title, "text": selenium_text, "url": url}
     except Exception:
-        pass
+        # Fallback: undetected-chromedriver
+        try:
+            import undetected_chromedriver as uc
+            options = uc.ChromeOptions()
+            # Uncomment and set your profile if needed:
+            # options.add_argument(r'--user-data-dir=C:\Users\denis\AppData\Local\Google\Chrome\User Data')
+            # options.add_argument(r'--profile-directory=Profile 4')
+            driver = uc.Chrome(options=options)
+            driver.get(url)
+            selenium_text = driver.find_element(By.TAG_NAME, "body").text
+            title = driver.title or url
+            driver.quit()
+            if selenium_text.strip():
+                return {"type": "webpage", "title": title, "text": selenium_text, "url": url}
+        except Exception:
+            pass
 
     return {"type": "webpage", "title": url, "text": "", "url": url}
 
@@ -347,7 +234,9 @@ def hybrid_web_search(query, get_results=3):
     safe_search_param = "kp=-2"
     query_encoded = urllib.parse.quote_plus(query)
     url = f"https://html.duckduckgo.com/html/?q={query_encoded}&{safe_search_param}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    }
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req) as response:
         html = response.read()
@@ -374,3 +263,122 @@ def hybrid_web_search(query, get_results=3):
         results.append(result)
 
     return results
+
+
+def search_google_images(query, get_results=5, min_img_size=None, content=False):
+    """
+    Clicks each Google Images thumbnail (only large ones) to open the side panel.
+    Returns a dict with image search results, similar to web_search.
+    """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    import urllib
+
+    min_min_width = min_min_height = 100  # Always filter out tiny thumbnails (not user-configurable)
+    min_width = min_height = 100          # Default min size for final image
+    if min_img_size:
+        for sep in ('*', ':', ';', 'x', 'X'):
+            if sep in min_img_size:
+                try:
+                    min_width, min_height = map(int, min_img_size.split(sep))
+                except Exception:
+                    pass
+                break
+
+    options = Options()
+    options.add_argument("--headless=new")
+    driver = webdriver.Chrome(options=options)
+    images_info = []
+    try:
+        query_encoded = urllib.parse.quote_plus(query)
+        url = f"https://www.google.com/search?tbm=isch&q={query_encoded}&safe=off"
+        driver.get(url)
+
+        scroll_attempts = 0
+        clicked = 0
+        checked_thumbs = set()
+        while clicked < get_results and scroll_attempts < 20:
+            thumbnails = driver.find_elements(By.CSS_SELECTOR, "img.YQ4gaf")
+            for idx, thumb in enumerate(thumbnails):
+                if clicked >= get_results:
+                    break
+                if thumb in checked_thumbs:
+                    continue
+                checked_thumbs.add(thumb)
+                try:
+                    width = int(thumb.get_attribute("width") or 0)
+                    height = int(thumb.get_attribute("height") or 0)
+                    alt = thumb.get_attribute("alt")
+                    # Always skip tiny thumbnails
+                    if width < min_min_width or height < min_min_height:
+                        continue
+                    if not thumb.is_displayed() or not thumb.is_enabled():
+                        continue
+                    driver.execute_script("arguments[0].scrollIntoView(true);", thumb)
+                    driver.execute_script("arguments[0].click();", thumb)
+                    try:
+                        side_img = WebDriverWait(driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "img[jsname='kn3ccd']"))
+                        )
+                        WebDriverWait(driver, 3).until(
+                            lambda d: driver.execute_script("return arguments[0].naturalWidth;", side_img) > 1
+                        )
+                    except Exception as e:
+                        print(f"Side panel image did not load: {e}")
+                        continue
+                    src = side_img.get_attribute("src")
+                    real_url = None
+                    img_width = img_height = 0
+                    if src and src.startswith("http"):
+                        real_url = src
+                        img_width = driver.execute_script("return arguments[0].naturalWidth;", side_img)
+                        img_height = driver.execute_script("return arguments[0].naturalHeight;", side_img)
+
+                    # Now filter by your actual min_size requirement
+                    if real_url and img_width >= min_width and img_height >= min_height:
+                        img_result = scrape_url(real_url)
+                        images_info.append({
+                            "url": real_url,
+                            "ascii_art": img_result.get("ascii_art"),
+                            "mime_type": img_result.get("mime_type"),
+                            "image_bytes": img_result.get("image_bytes"),
+                            "text": alt or "[Image]",
+                            "path": None,
+                        })
+                        clicked += 1
+                except Exception as e:
+                    print(f"Exception: {e}")
+                    continue
+            if clicked < get_results:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                WebDriverWait(driver, 2).until(
+                    lambda d: len(d.find_elements(By.CSS_SELECTOR, "img.YQ4gaf")) > len(checked_thumbs)
+                )
+                scroll_attempts += 1
+    finally:
+        driver.quit()
+
+    if content:
+        return {
+            "type": "image_search",
+            "images": [
+                {
+                    "type": "image",
+                    "image_bytes": img["image_bytes"],
+                    "mime_type": img["mime_type"],
+                    "ascii_art": img["ascii_art"],
+                    "text": img["text"],
+                    "path": img["url"],
+                }
+                for img in images_info
+            ]
+        }
+    else:
+        summary = "\n".join([f"Image: {img['text']}\nURL: {img['url']}\n" for img in images_info])
+        return {
+            "type": "text",
+            "content": summary
+        }
