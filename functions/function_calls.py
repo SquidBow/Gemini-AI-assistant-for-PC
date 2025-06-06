@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -13,6 +14,7 @@ import chardet
 import json
 import sys
 import py_compile
+import webbrowser
 from functions.scrape_url import scrape_url  # Add this import at the top of your file
 
 
@@ -39,23 +41,23 @@ def load_background_processes():
         except Exception as e:
             print(f"[ERROR] Loading background processes: {e}")
 
-def add_known_file(filepath):
+def add_known_file(path):
     """internal"""
-    filepath = str(Path(filepath).resolve())
+    path = str(Path(path).resolve())
     KNOWN_FILES_PATH.touch(exist_ok=True)
     with KNOWN_FILES_PATH.open("r+", encoding="utf-8") as f:
         files = set(line.strip() for line in f)
-        if filepath not in files:
-            f.write(filepath + "\n")
+        if path not in files:
+            f.write(path + "\n")
 
-def remove_known_file(filepath):
+def remove_known_file(path):
     """internal"""
-    filepath = str(Path(filepath).resolve())
+    path = str(Path(path).resolve())
     if not KNOWN_FILES_PATH.exists():
         return
     with KNOWN_FILES_PATH.open("r", encoding="utf-8") as f:
         files = set(line.strip() for line in f)
-    files_to_remove = {f for f in files if f == filepath or f.startswith(filepath + os.sep)}
+    files_to_remove = {f for f in files if f == path or f.startswith(path + os.sep)}
     files -= files_to_remove
     with KNOWN_FILES_PATH.open("w", encoding="utf-8") as f:
         for file in files:
@@ -67,11 +69,11 @@ def list_known_files():
     with KNOWN_FILES_PATH.open("r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
-def backup_file(filepath):
+def backup_file(path):
     """internal"""
     try:
         BACKUP_FOLDER.mkdir(parents=True, exist_ok=True)
-        src = Path(filepath)
+        src = Path(path)
         if src.exists():
             backup_path = BACKUP_FOLDER / src.name
             count = 1
@@ -82,43 +84,43 @@ def backup_file(filepath):
     except Exception as e:
         print(f"[ERROR] Backup file: {e}")
 
-def detect_encoding(filepath, sample_size=4096):
+def detect_encoding(path, sample_size=4096):
     """internal"""
-    with open(filepath, "rb") as f:
+    with open(path, "rb") as f:
         raw = f.read(sample_size)
     return chardet.detect(raw)["encoding"] or "utf-8"
 
-def try_read_file_with_encodings(filepath, encodings=None):
+def try_read_file_with_encodings(path, encodings=None):
     """internal"""
     if encodings is None:
         encodings = ["utf-8-sig", "utf-8", "utf-16", "cp1251", "cp1252", "latin1"]
     for enc in encodings:
         try:
-            with open(filepath, "r", encoding=enc) as f:
+            with open(path, "r", encoding=enc) as f:
                 return f.read()
         except Exception:
             continue
-    enc = detect_encoding(filepath)
+    enc = detect_encoding(path)
     try:
-        with open(filepath, "rb") as f:
+        with open(path, "rb") as f:
             raw = f.read()
         return raw.decode(enc, errors="replace")
     except Exception:
         return None
 
-def create_file(filepath, contents=None, append=False):
+def create_file(path, contents=None, append=False):
     # If the path ends with a slash or backslash, create a folder
-    if filepath.endswith("/") or filepath.endswith("\\"):
-        path = Path(os.path.expanduser(filepath)).resolve()
+    if path.endswith("/") or path.endswith("\\"):
+        path = Path(os.path.expanduser(path)).resolve()
         path.mkdir(parents=True, exist_ok=True)
         add_known_file(path)
         return f"Created folder: {path}"
     try:
-        path = Path(os.path.expanduser(filepath)).resolve()
+        path = Path(os.path.expanduser(path)).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if append else "w"
         backup_file(path)
-        encoding = "utf-8-sig" if path.suffix.lower() == ".ps1" else "utf-8"
+        encoding = "utf-8-sig"
         if isinstance(contents, str):
             # Only decode escapes if it doesn't look like code
             if not ("def " in contents or "import " in contents or "class " in contents):
@@ -141,18 +143,18 @@ def create_file(filepath, contents=None, append=False):
         if proc_info and psutil.pid_exists(proc_info["pid"]):
             terminate_execution(abs_path)
             execute(abs_path, time_to_execute=proc_info.get("time_to_execute", 0), background=True)
-            return f"{'Appended to' if append else 'Created'} file: {filepath}. Relaunched running process."
-        return f"{'Appended to' if append else 'Created'} file: {filepath}"
+            return f"{'Appended to' if append else 'Created'} file: {path}. Relaunched running process."
+        return f"{'Appended to' if append else 'Created'} file: {path}"
     except PermissionError:
-        return f"Permission denied: Cannot write to {filepath}. Try running as administrator."
+        return f"Permission denied: Cannot write to {path}. Try running as administrator."
     except Exception as e:
         return f"Error creating/appending file: {e}"
 
-def edit_file(filepath, old_block, new_block):
+def edit_file(path, old_block, new_block):
     from pathlib import Path
     import os
 
-    path = Path(os.path.expanduser(filepath)).resolve()
+    path = Path(os.path.expanduser(path)).resolve()
     if not path.exists():
         return {"type": "text", "content": f"Error: File does not exist: {path}"}
 
@@ -179,7 +181,7 @@ def edit_file(filepath, old_block, new_block):
     except Exception as e:
         return {"type": "text", "content": f"Error writing file: {e}"}
 
-    return {"type": "text", "content": f"[Function] Edited file: {filepath}"}
+    return {"type": "text", "content": f"[Function] Edited file: {path}"}
 
 def delete(path):
     abs_path = str(Path(os.path.expanduser(path)).resolve())
@@ -205,10 +207,11 @@ def delete(path):
 def read(path="Path to the image/file/folder"):
     if not path:
         return "Error: No path provided."
-    if isinstance(path, str):
-        path = path.strip().replace("\\", "/")  # Normalize slashes here!
-        if path.startswith("http:") or path.startswith("https:"):
-            return scrape_url(path)
+
+    if isinstance(path, str) and (path.startswith("http://") or path.startswith("https://")):
+        from functions.scrape_url import scrape_url
+        return scrape_url(path)
+
     abs_path = str(Path(os.path.expanduser(path)).resolve())
     p = Path(abs_path)
     if not p.exists():
@@ -236,14 +239,16 @@ def read(path="Path to the image/file/folder"):
     try:
         img = Image.open(p)
         buffered = BytesIO()
-        img.save(buffered, format=img.format or "PNG")
-        ascii_art = image_to_ascii_color(img, width=120)
+        # Always save as PNG for compatibility
+        img.save(buffered, format="PNG")
+        ascii_art = image_to_ascii_color(img)  # Use terminal width
         info = {
             "type": "image",
-            "image_bytes": buffered.getvalue(),  # The raw bytes you downloaded
-            "mime_type": "image/png", # Or whatever is correct
-            "ascii_art": ascii_art,   # Optional
-            "text": f"[Image: {abs_path}]", # Optional
+            "image_bytes": buffered.getvalue(),
+            "mime_type": "image/png",
+            "ascii_art": ascii_art,
+            "text": f"[Image: {abs_path}]",
+            "path": abs_path
         }
         add_known_file(abs_path)
         return info
@@ -253,9 +258,9 @@ def read(path="Path to the image/file/folder"):
     # Try text
     content = try_read_file_with_encodings(abs_path)
     if content is not None:
-        TOKEN_LIMIT = 90000
+        TOKEN_LIMIT = 300000
         if len(content) > TOKEN_LIMIT:
-            content = content[:TOKEN_LIMIT] + "\n[token limit reached, first 90 000 tokens shown]"
+            content = content[:TOKEN_LIMIT] + "\n[token limit reached, first 300 000 tokens shown]"
         add_known_file(abs_path)
         if not content.strip():
             return {
@@ -284,8 +289,16 @@ def read(path="Path to the image/file/folder"):
     except Exception as e:
         return f"Error reading file: {e}"
 
-def execute(filepath, time_to_execute=0, background=False, new_window=False, arguments=None):
-    abs_path = str(Path(os.path.expanduser(filepath)).resolve())
+def execute(path="Path/to/file or a URL to open the website for user", time_to_execute=0, background=False, new_window=False, arguments=None):
+    # If the path is a URL, open it in the browser
+    if isinstance(path, str) and (path.startswith("http:") or path.startswith("https:")):
+        try:
+            webbrowser.open(path, new=2)  # new=2 opens in a new tab, if possible
+            return f"Opened URL in browser: {path}"
+        except Exception as e:
+            return f"Error opening URL in browser: {e}"
+
+    abs_path = str(Path(os.path.expanduser(path)).resolve())
     p = Path(abs_path)
     if not p.exists():
         return f"Error: File does not exist: {abs_path}"
@@ -303,26 +316,6 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
         elif isinstance(arguments, list):
             arg_list = arguments
 
-    # --- Compile Java file first if necessary ---
-    if ext == ".java":
-        compile_cmd = ["javac", abs_path]
-        try:
-            compile_proc = subprocess.run(
-                compile_cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                shell=False,  # Safer not to use shell for compilation
-                check=False  # Don't raise exception on non-zero exit
-            )
-            if compile_proc.returncode != 0:
-                return f"Java compilation failed:\nSTDOUT:\n{compile_proc.stdout}\nSTDERR:\n{compile_proc.stderr}"
-            print(f"[DEBUG] Java file compiled successfully: {abs_path}")
-        except FileNotFoundError:
-            return "Error: 'javac' command not found. Make sure JDK is installed and in your system's PATH."
-        except Exception as e:
-            return f"Error during Java compilation: {e}"
-    # --- End Java compilation ---
 
     # --- Handle new_window specifically for Python and Batch --- 
     if new_window:
@@ -354,9 +347,9 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                     ["cmd.exe", "/c", "start", "", abs_path],
                     cwd=p.parent
                 )
-            return f"Opened {filepath} in a new window (PID {proc.pid})."
+            return f"Opened {path} in a new window (PID {proc.pid})."
         except Exception as e:
-            return f"Error starting {filepath} in new window: {e}"
+            return f"Error starting {path} in new window: {e}"
 
     # --- Foreground execution function ---
     def run_process():
@@ -370,7 +363,28 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
         elif ext == ".py":
             cmd = [sys.executable, abs_path] + arg_list
         elif ext == ".java":
-            cmd = ["java", "-cp", str(p.parent), class_name] + arg_list
+            # Compile first if needed
+            if not (p.parent / f"{class_name}.class").exists():
+                compile_cmd = ["javac", abs_path]
+                compile_proc = subprocess.run(compile_cmd, capture_output=True, text=True, encoding="utf-8", check=False)
+                if compile_proc.returncode != 0:
+                    return f"Background start failed: Java compilation failed:\n{compile_proc.stderr}"
+            # Detect main class name
+            with open(abs_path, "r", encoding="utf-8") as f:
+                java_code = f.read()
+            match = re.search(r'public\s+class\s+(\w+)', java_code)
+            main_class = match.group(1) if match else class_name
+            # Pre-flight: run with short timeout
+            try:
+                test_proc = subprocess.run(
+                    ["java", "-cp", str(p.parent), main_class],
+                    cwd=p.parent, timeout=3, capture_output=True, text=True
+                )
+                if test_proc.returncode != 0:
+                    return f"Java program failed pre-flight check:\nSTDOUT:\n{test_proc.stdout}\nSTDERR:\n{test_proc.stderr}"
+            except Exception as e:
+                return f"Java program failed pre-flight check: {e}"
+            cmd = ["java", "-cp", str(p.parent), main_class]
         else:
             cmd = [abs_path] + arg_list
 
@@ -385,6 +399,7 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
+                errors="replace",  # <-- add this
                 shell=use_shell,
                 env=env,
                 cwd=p.parent
@@ -435,7 +450,7 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                 return "Error: 'java' command not found. Make sure JRE/JDK is installed and in your system's PATH."
             if ext == ".py" and cmd and cmd[0] == sys.executable:
                 return f"Error: Python interpreter not found at '{sys.executable}' or not in PATH."
-            return f"Error: Command not found for executing {filepath}. Ensure the required interpreter/runtime is installed and in PATH."
+            return f"Error: Command not found for executing {path}. Ensure the required interpreter/runtime is installed and in PATH."
         except Exception as e:
             return f"Error executing file: {e}"
     # --- End foreground execution function ---
@@ -484,26 +499,32 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                     return f"Executable failed pre-flight check: {e}"
                 cmd = [abs_path]
             elif ext == ".java":
+                # Compile first if needed
                 if not (p.parent / f"{class_name}.class").exists():
                     compile_cmd = ["javac", abs_path]
                     compile_proc = subprocess.run(compile_cmd, capture_output=True, text=True, encoding="utf-8", check=False)
                     if compile_proc.returncode != 0:
                         return f"Background start failed: Java compilation failed:\n{compile_proc.stderr}"
+                # Detect main class name
+                with open(abs_path, "r", encoding="utf-8") as f:
+                    java_code = f.read()
+                match = re.search(r'public\s+class\s+(\w+)', java_code)
+                main_class = match.group(1) if match else class_name
                 # Pre-flight: run with short timeout
                 try:
                     test_proc = subprocess.run(
-                        ["java", "-cp", str(p.parent), class_name],
+                        ["java", "-cp", str(p.parent), main_class],
                         cwd=p.parent, timeout=3, capture_output=True, text=True
                     )
                     if test_proc.returncode != 0:
                         return f"Java program failed pre-flight check:\nSTDOUT:\n{test_proc.stdout}\nSTDERR:\n{test_proc.stderr}"
                 except Exception as e:
                     return f"Java program failed pre-flight check: {e}"
-                cmd = ["java", "-cp", str(p.parent), class_name]
+                cmd = ["java", "-cp", str(p.parent), main_class]
             else:
                 # For other types, just check if file exists and is executable
                 if not os.access(abs_path, os.X_OK):
-                    return f"File {filepath} is not executable or not found."
+                    return f"File {path} is not executable or not found."
                 cmd = [abs_path]
 
             use_shell = (ext == ".bat")
@@ -520,7 +541,7 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                 if proc.poll() is not None:
                     out, err = proc.communicate()
                     error_msg = (
-                        f"Error: Background process for {filepath} exited immediately.\n"
+                        f"Error: Background process for {path} exited immediately.\n"
                         f"Output:\n{out.decode(errors='replace')}\n"
                         f"Error:\n{err.decode(errors='replace')}"
                     )
@@ -531,7 +552,7 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                         if errors_path.exists():
                             with errors_path.open("r", encoding="utf-8") as f:
                                 errors = json.load(f)
-                        errors.append({"file": filepath, "error": error_msg, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                        errors.append({"file": path, "error": error_msg, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
                         with errors_path.open("w", encoding="utf-8") as f:
                             json.dump(errors, f, ensure_ascii=False, indent=2)
                     except Exception as e:
@@ -545,13 +566,13 @@ def execute(filepath, time_to_execute=0, background=False, new_window=False, arg
                 "type": ext
             }
             save_background_processes()
-            return f"Started {filepath} in background with PID {proc.pid}."
+            return f"Started {path} in background with PID {proc.pid}."
         except FileNotFoundError:
             if ext == ".java" and cmd and cmd[0] == "java":
                 return "Error starting background process: 'java' command not found."
             if ext == ".py" and cmd and cmd[0] == sys.executable:
                 return f"Error starting background process: Python interpreter not found at '{sys.executable}'."
-            return f"Error starting background process: Command not found for {filepath}."
+            return f"Error starting background process: Command not found for {path}."
         except Exception as e:
             return f"Error starting background process: {e}"
     else:
@@ -577,18 +598,18 @@ def list_background_processes():
         result = "No background processes tracked."
     return result
 
-def terminate_execution(filepath):
-    abs_path = str(Path(os.path.expanduser(filepath)).resolve())
+def terminate_execution(path):
+    abs_path = str(Path(os.path.expanduser(path)).resolve())
     proc_info = BACKGROUND_PROCESSES.get(abs_path)
     if not proc_info:
-        target_name = os.path.basename(filepath)
+        target_name = os.path.basename(path)
         for stored_path, stored_info in BACKGROUND_PROCESSES.items():
             if os.path.basename(stored_path) == target_name:
                 abs_path, proc_info = stored_path, stored_info
                 break
     if not proc_info:
         tracked = "\n".join(BACKGROUND_PROCESSES.keys())
-        return f"No background process found for {filepath}.\nTracked processes:\n{tracked or 'None'}"
+        return f"No background process found for {path}.\nTracked processes:\n{tracked or 'None'}"
     pid = proc_info["pid"] if isinstance(proc_info, dict) else proc_info
     try:
         p = psutil.Process(pid)
@@ -598,11 +619,11 @@ def terminate_execution(filepath):
         p.wait(timeout=5)
         del BACKGROUND_PROCESSES[abs_path]
         save_background_processes()
-        return f"Terminated process for {filepath} (PID {pid})."
+        return f"Terminated process for {path} (PID {pid})."
     except psutil.NoSuchProcess:
         del BACKGROUND_PROCESSES[abs_path]
         save_background_processes()
-        return f"Process for {filepath} (PID {pid}) was already terminated."
+        return f"Process for {path} (PID {pid}) was already terminated."
     except Exception as e:
         return f"Error terminating process: {e}"
     

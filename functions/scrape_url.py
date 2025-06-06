@@ -12,6 +12,7 @@ import time
 import re
 import undetected_chromedriver as uc
 from urllib.parse import urlparse, urljoin
+import mimetypes
 
 def scrape_url(url="scrape site for its contents or a url of an image to see it"):
     """
@@ -40,12 +41,12 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
             if not ext or len(ext) > 5:
                 ext = ".jpg"
             filename = f"{url_hash}{ext}"
-            filepath = os.path.join(img_folder, filename)
+            path = os.path.join(img_folder, filename)
             # If file already exists, use it
-            if not os.path.isfile(filepath):
+            if not os.path.isfile(path):
                 try:
                     img_data = requests.get(url, headers=headers, timeout=10).content
-                    with open(filepath, "wb") as f:
+                    with open(path, "wb") as f:
                         f.write(img_data)
                 except Exception as e:
                     return {
@@ -53,11 +54,11 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
                         "error": f"Failed to download image: {e}"
                     }
             else:
-                with open(filepath, "rb") as f:
+                with open(path, "rb") as f:
                     img_data = f.read()
             # Generate ASCII art
             try:
-                img = Image.open(filepath)
+                img = Image.open(path)
                 img = img.convert("RGB")
                 img = ImageEnhance.Brightness(img).enhance(1)
                 ascii_art = image_to_ascii_color(img)
@@ -65,15 +66,20 @@ def scrape_url(url="scrape site for its contents or a url of an image to see it"
                 ascii_art = "[Could not generate ASCII art for this image.]"
             # Delete the file after processing
             try:
-                os.remove(filepath)
+                os.remove(path)
             except Exception:
                 pass
+            # After downloading the image
+            mime_type = requests.head(url, headers=headers, allow_redirects=True).headers.get("content-type")
+            if not mime_type:
+                mime_type, _ = mimetypes.guess_type(url)
+            if not mime_type:
+                mime_type = "application/octet-stream"
             return {
                 "type": "image",
                 "image_bytes": img_data,  # The raw bytes you downloaded
-                "mime_type": "image/png", # Or whatever is correct
+                "mime_type": mime_type, # Or whatever is correct
                 "ascii_art": ascii_art,   # Optional
-                "text": f"[Image: {url}]", # Optional
             }
 
         # Otherwise, treat as a webpage
@@ -200,7 +206,10 @@ def scrape_url_undetected(url):
     Internal. Scrapes a URL for text and image URLs using undetected_chromedriver (for JS-heavy or protected sites).
     """
     options = uc.ChromeOptions()
+    options.add_argument("--window-position=2000,0")  # Move window off-screen (if your screen isn't that wide, use a large value)
+    options.add_argument("--window-size=300,200")     # Make the window small
     driver = uc.Chrome(options=options)
+    driver.minimize_window()
     try:
         driver.get(url)
         time.sleep(3)  # Give JS time to render; adjust as needed
@@ -302,9 +311,3 @@ def html_to_text_with_links(soup, page_url=None):
     texts = soup.find_all(string=True)
     visible_texts = filter(visible_text, texts)
     return "\n".join(t.strip() for t in visible_texts if t.strip())
-
-if __name__ == "__main__":
-    # Example usage
-    url = "https://www.amazon.com/s?k=pc&crid=30YVDU998VIOI&sprefix=p%2Caps%2C172"
-    result = scrape_url(url)
-    print(result)

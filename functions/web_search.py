@@ -16,78 +16,89 @@ import re
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from functions.scrape_url import scrape_url
 
-def web_search(query="Your Search Query", search_type="webpage/image/video", get_results=5, content=False, min_img_size="100x100"):
+def video_search(query, number_of_results="5"):
+    """
+    Search for videos on Google Video search and return only video titles (names) and lengths (durations), ensuring unique results.
+    """
+    # Convert string to int
+    if isinstance(number_of_results, str):
+        number_of_results = int(number_of_results)
+    
+    options = Options()
+    options.add_argument("--headless=new")  # Use the new headless mode
+    driver = webdriver.Chrome(options=options)
+    try:
+        url = f"https://www.google.com/search?q={query}&tbm=vid&safe=off"
+        driver.get(url)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a"))
+        )
+        results = driver.find_elements(By.CSS_SELECTOR, 'a[class*="rIRoqf"]')
+        seen_titles = set()
+        video_infos = []
+        for a in results:
+            href = a.get_attribute("href")
+            if not href:
+                continue
+            title = a.get_attribute("aria-label") or a.text.strip()
+            if not title:
+                try:
+                    title = a.find_element(By.XPATH, "..").text.strip()
+                except Exception:
+                    title = "[No title]"
+            # Try to find the duration (length) in the parent or sibling elements
+            duration = ""
+            try:
+                parent = a.find_element(By.XPATH, "../..")
+                time_spans = parent.find_elements(By.XPATH, ".//span")
+                for span in time_spans:
+                    text = span.text.strip()
+                    if re.match(r"^\d{1,2}:\d{2}$", text) or re.match(r"^\d{1,2}:\d{2}:\d{2}$", text):
+                        duration = text
+                        break
+            except Exception:
+                pass
+            result_str = f"{title} [{duration}]" if duration else title
+            if result_str in seen_titles:
+                continue
+            seen_titles.add(result_str)
+            video_infos.append(result_str)
+            if len(video_infos) >= number_of_results:
+                break
+        if not video_infos:
+            return f"Google Video search results from: {url}\nNo videos found."
+        return "\n".join(video_infos)
+    finally:
+        driver.quit()
+
+def web_search(query="Your Search Query", number_of_results="3", content=False):
     """
     search_type: "webpage", "image", or "video"
     min_size: string like "1920*1080", "1920:1080", or "1920;1080"
     """
     token_limit = 1000000
 
-    if search_type == "video":
-        options = Options()
-        options.add_argument("--headless=new")  # Use the new headless mode
-        driver = webdriver.Chrome(options=options)
-        try:
-            url = f"https://www.google.com/search?q={query}&tbm=vid&safe=off"
-            driver.get(url)
-            time.sleep(2)
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "a"))
-            )
-            results = driver.find_elements(By.CSS_SELECTOR, "a")
-            seen = set()
-            video_infos = []
-            for a in results:
-                href = a.get_attribute("href")
-                # Exclude TikTok and Google search/advanced search URLs
-                if (
-                    href
-                    and not href.startswith("https://www.google.com/search")
-                    and not href.startswith("https://www.google.com/advanced_video_search")
-                    and "tiktok.com" not in href
-                ):
-                    # Normalize URL (remove fragment/query for deduplication)
-                    base_href = href.split('&')[0].split('#')[0]
-                    if base_href in seen:
-                        continue
-                    # Try to get the title from the link text or parent
-                    title = a.text.strip()
-                    if not title:
-                        try:
-                            title = a.find_element(By.XPATH, "..").text.strip()
-                        except Exception:
-                            title = "[No title]"
-                    # Only add if it's a likely video link
-                    if "/video" in href or "/watch" in href or "video" in href:
-                        video_infos.append(f"{title}\n{href}")
-                        seen.add(base_href)
-                if len(video_infos) >= get_results:
-                    break
-
-            if not video_infos:
-                return f"Google Video search results from: {url}\nNo videos found."
-            return f"Google Video URLs from: {url}\n" + "\n\n".join(video_infos)
-        finally:
-            driver.quit()
-
-    if search_type == "image":
-    # Use the improved Google Images search
-        return search_google_images(query, get_results=get_results, min_img_size=min_img_size, content=content)
-
-    # Default: webpage search using hybrid logic
     try:
-        results = hybrid_web_search(query, get_results=get_results)
-
+        # Ensure number_of_results is an integer
+        if isinstance(number_of_results, str):
+            number_of_results = int(number_of_results)
+        
+        results = hybrid_web_search(query, number_of_results=number_of_results)
+        seen_urls = set()
         summary_lines = []
         aggregated = []
         total_tokens = 0
         for res in results:
+            url = res.get("url", "") if res.get("url") else res.get("source_url", "")
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
             if res.get("type") == "webpage":
                 text = res.get("text", "")
                 if not text.strip():
                     continue
                 title = res.get("title", "")
-                url = res.get("url", "") if res.get("url") else res.get("source_url", "")
                 # Fallback: if url is not present, use the title if it's a URL, else leave blank
                 if not url:
                     url = res.get("title") if res.get("title", "").startswith("http") else ""
@@ -95,7 +106,7 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
                 summary_lines.append(f"Site: {title}\n{url}")
                 # For AI: aggregate content
                 if content:
-                    chunk = f"Site: {title}\n{url}\n{text.strip()}\n"
+                    chunk = f"Scraped site: {title}\n{url}\n{text.strip()}\n"
                 else:
                     chunk = f"Site: {title}\n{url}\n"
                 chunk_tokens = len(chunk)
@@ -107,16 +118,14 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
                 total_tokens += chunk_tokens
             if total_tokens >= token_limit:
                 break
-
         summary = "\n\n".join(summary_lines)
         full_content = "\n".join(aggregated)
-
         if summary_lines:
             return {
                 "summary": summary,
                 "text": full_content,
                 "type": "webpage",
-                "ai_text": full_content,  # For AI: with or without content, depending on content
+                "ai_text": full_content,
                 "content": content
             }
         else:
@@ -129,6 +138,7 @@ def web_search(query="Your Search Query", search_type="webpage/image/video", get
             }
     except Exception as e:
         return f"An error occurred: {e}", ""
+    
 
 def fetch_with_retries(url, retries=3, delay=2):
     """internal"""
@@ -225,11 +235,18 @@ def hybrid_scrape_url(url):
 
     return {"type": "webpage", "title": url, "text": "", "url": url}
 
-def hybrid_web_search(query, get_results=3):
+def hybrid_web_search(query, number_of_results=3):
     """Internal Search DuckDuckGo and scrape each result with hybrid_scrape_url."""
     import urllib.parse
     import urllib.request
     from bs4 import BeautifulSoup
+
+    # Ensure number_of_results is an integer
+    if isinstance(number_of_results, str):
+        number_of_results = int(number_of_results)
+    
+    if number_of_results is None:
+        number_of_results = 3  # or any sensible default
 
     safe_search_param = "kp=-2"
     query_encoded = urllib.parse.quote_plus(query)
@@ -254,7 +271,7 @@ def hybrid_web_search(query, get_results=3):
         else:
             real_url = link
         urls.append(real_url)
-        if len(urls) >= get_results:
+        if len(urls) >= number_of_results:
             break
 
     results = []
@@ -265,11 +282,15 @@ def hybrid_web_search(query, get_results=3):
     return results
 
 
-def search_google_images(query, get_results=5, min_img_size=None, content=False):
+def image_search(query, number_of_results="5",  min_img_size="100x100", exact_size = False, content=False):
     """
-    Internal. Clicks each Google Images thumbnail (only large ones) to open the side panel.
-    Returns a dict with image search results, similar to web_search.
+    Clicks each Google Images thumbnail (only large ones) to open the side panel.
+    Returns a dict with image search results, similar to web_search. Ensures unique image URLs.
     """
+    # Convert string to int
+    if isinstance(number_of_results, str):
+        number_of_results = int(number_of_results)
+    
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.common.by import By
@@ -279,19 +300,21 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
 
     min_min_width = min_min_height = 100  # Always filter out tiny thumbnails (not user-configurable)
     min_width = min_height = 100          # Default min size for final image
-    if min_img_size:
+    if  min_img_size:
         for sep in ('*', ':', ';', 'x', 'X'):
-            if sep in min_img_size:
+            if sep in  min_img_size:
                 try:
-                    min_width, min_height = map(int, min_img_size.split(sep))
+                    min_width, min_height = map(int,  min_img_size.split(sep))
                 except Exception:
                     pass
                 break
 
     options = Options()
-    options.add_argument("--headless=new")
+    options.add_argument("--headless=new")  # Use the new headless mode
     driver = webdriver.Chrome(options=options)
+    driver.minimize_window()
     images_info = []
+    seen_urls = set()
     try:
         query_encoded = urllib.parse.quote_plus(query)
         url = f"https://www.google.com/search?tbm=isch&q={query_encoded}&safe=off"
@@ -300,10 +323,10 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
         scroll_attempts = 0
         clicked = 0
         checked_thumbs = set()
-        while clicked < get_results and scroll_attempts < 20:
+        while clicked < number_of_results and scroll_attempts < 40:
             thumbnails = driver.find_elements(By.CSS_SELECTOR, "img.YQ4gaf")
             for idx, thumb in enumerate(thumbnails):
-                if clicked >= get_results:
+                if clicked >= number_of_results:
                     break
                 if thumb in checked_thumbs:
                     continue
@@ -312,7 +335,6 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
                     width = int(thumb.get_attribute("width") or 0)
                     height = int(thumb.get_attribute("height") or 0)
                     alt = thumb.get_attribute("alt")
-                    # Always skip tiny thumbnails
                     if width < min_min_width or height < min_min_height:
                         continue
                     if not thumb.is_displayed() or not thumb.is_enabled():
@@ -320,14 +342,32 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
                     driver.execute_script("arguments[0].scrollIntoView(true);", thumb)
                     driver.execute_script("arguments[0].click();", thumb)
                     try:
-                        side_img = WebDriverWait(driver, 5).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "img[jsname='kn3ccd']"))
+                        WebDriverWait(driver, 8).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "div.AQyBn[jsname='To2LVe']"))
                         )
-                        WebDriverWait(driver, 3).until(
+                    except Exception:
+                        pass
+                    side_img = None
+                    selectors = [
+                        "img[jsname='kn3ccd']",
+                        "img[jsname='JuXqh']",
+                    ]
+                    for selector in selectors:
+                        try:
+                            side_img = WebDriverWait(driver, 3).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                            )
+                            if side_img:
+                                break
+                        except Exception:
+                            continue
+                    if not side_img:
+                        continue
+                    try:
+                        WebDriverWait(driver, 8).until(
                             lambda d: driver.execute_script("return arguments[0].naturalWidth;", side_img) > 1
                         )
-                    except Exception as e:
-                        print(f"Side panel image did not load: {e}")
+                    except Exception:
                         continue
                     src = side_img.get_attribute("src")
                     real_url = None
@@ -336,9 +376,10 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
                         real_url = src
                         img_width = driver.execute_script("return arguments[0].naturalWidth;", side_img)
                         img_height = driver.execute_script("return arguments[0].naturalHeight;", side_img)
-
-                    # Now filter by your actual min_size requirement
-                    if real_url and img_width >= min_width and img_height >= min_height:
+                    if real_url and real_url not in seen_urls and (
+                        (exact_size and img_width == min_width and img_height == min_height) or
+                        (not exact_size and img_width >= min_width and img_height >= min_height)
+                    ):
                         img_result = scrape_url(real_url)
                         images_info.append({
                             "url": real_url,
@@ -348,20 +389,27 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
                             "text": alt or "[Image]",
                             "path": None,
                         })
+                        seen_urls.add(real_url)
                         clicked += 1
                 except Exception as e:
-                    print(f"Exception: {e}")
                     continue
-            if clicked < get_results:
+            if clicked < number_of_results:
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                WebDriverWait(driver, 2).until(
-                    lambda d: len(d.find_elements(By.CSS_SELECTOR, "img.YQ4gaf")) > len(checked_thumbs)
-                )
+                try:
+                    WebDriverWait(driver, 2).until(
+                        lambda d: len(d.find_elements(By.CSS_SELECTOR, "img.YQ4gaf")) > len(checked_thumbs)
+                    )
+                except Exception:
+                    break
                 scroll_attempts += 1
     finally:
         driver.quit()
 
     if content:
+        ascii_summary = "\n\n".join([
+            f"Image: {img['text']}\nURL: {img['url']}\n\n{img['ascii_art'] or '[No ASCII Art]'}\n"
+            for img in images_info
+        ])
         return {
             "type": "image_search",
             "images": [
@@ -374,7 +422,8 @@ def search_google_images(query, get_results=5, min_img_size=None, content=False)
                     "path": img["url"],
                 }
                 for img in images_info
-            ]
+            ],
+            "ascii_summary": ascii_summary
         }
     else:
         summary = "\n".join([f"Image: {img['text']}\nURL: {img['url']}\n" for img in images_info])
